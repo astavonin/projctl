@@ -1,0 +1,29 @@
+# Sample single issue definition for testing
+epic:
+  id: 21  # Reference to existing epic
+
+issues:
+  - title: "[Impl] Implement feature X"
+    description: |
+      # Description
+
+      Implement feature X according to design document.
+
+      # Acceptance Criteria
+
+      - Feature implemented
+      - Unit tests added and passing
+      - Documentation updated
+      - Code review passed
+
+      # Technical Notes
+
+      Use existing patterns from module Y.
+      Ensure backward compatibility.
+
+    labels:
+      - "type::implementation"
+      - "priority::medium"
+    assignee: "dev2"
+    milestone: "v2.0"
+    due_date: "2026-03-01"

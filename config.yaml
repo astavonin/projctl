@@ -1,0 +1,26 @@
+# CI Platform Manager Configuration for genai-automations repo
+
+platform: gitlab
+
+gitlab:
+  default_group: "your/default/group"
+
+  labels:
+    default:
+      - "type::feature"
+      - "development-status::backlog"
+
+    default_epic:
+      - "type::epic"
+
+    allowed: []
+
+common:
+  issue_template:
+    required_sections:
+      - "Description"
+      - "Acceptance Criteria"
+
+# Planning sync configuration
+planning_sync:
+  gdrive_base: ~/GoogleDrive

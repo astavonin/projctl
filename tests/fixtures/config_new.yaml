@@ -1,0 +1,39 @@
+# New multi-platform config format
+platform: gitlab
+
+gitlab:
+  default_group: "test/group"
+  labels:
+    default:
+      - "type::feature"
+      - "development-status::backlog"
+    default_epic:
+      - "epic"
+    allowed:
+      - "type::feature"
+      - "type::bug"
+      - "type::enhancement"
+      - "development-status::backlog"
+      - "development-status::in-progress"
+      - "development-status::done"
+      - "epic"
+      - "priority::high"
+      - "priority::medium"
+      - "priority::low"
+
+github:
+  default_org: "test-org"
+  labels:
+    default:
+      - "feature"
+      - "backlog"
+    allowed:
+      - "feature"
+      - "bug"
+      - "enhancement"
+
+common:
+  issue_template:
+    required_sections:
+      - "Description"
+      - "Acceptance Criteria"

@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ci-platform-manager"
+version = "2.0.0"
+description = "Multi-platform CI automation tool for GitLab and GitHub"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "GenAI Automations"}
+]
+keywords = ["gitlab", "github", "ci", "automation", "issues", "epics", "milestones"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Build Tools",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+    "PyYAML>=5.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+    "flake8>=6.0",
+    "mypy>=1.0",
+    "pylint>=3.0",
+    "types-PyYAML>=6.0",
+]
+
+[project.scripts]
+ci-platform-manager = "ci_platform_manager.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/genai-automations/ci-platform-manager"
+Repository = "https://github.com/genai-automations/ci-platform-manager"
+Documentation = "https://github.com/genai-automations/ci-platform-manager#readme"
+
+[tool.setuptools.packages.find]
+exclude = ["tests", "tests.*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py37', 'py38', 'py39', 'py310', 'py311']
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --cov=ci_platform_manager --cov-report=term-missing"
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[tool.pylint.main]
+jobs = 4
+persistent = true
+suggestion-mode = true
+
+[tool.pylint.messages_control]
+disable = [
+    "missing-docstring",
+]
+
+[tool.pylint.format]
+max-line-length = 120
+
+[tool.pylint.basic]
+good-names = ["i", "j", "k", "ex", "_", "id", "iid"]
+
+[tool.pylint.design]
+max-args = 10
+max-locals = 20

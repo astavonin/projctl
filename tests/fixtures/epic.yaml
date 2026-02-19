@@ -1,0 +1,97 @@
+# Sample epic definition for testing
+epic:
+  title: "[Epic] Test Feature Implementation"
+  description: |
+    # Description
+
+    Complete implementation of test feature.
+
+    # Goals
+
+    - Deliver core functionality
+    - Ensure quality standards
+    - Complete documentation
+
+    # Success Criteria
+
+    - All issues closed
+    - Tests passing
+    - Documentation complete
+
+issues:
+  - id: research-task
+    title: "[Research] Investigate architecture patterns"
+    description: |
+      # Description
+
+      Research existing architecture patterns and recommend approach.
+
+      # Acceptance Criteria
+
+      - Architecture document created
+      - Review completed
+      - Approach approved
+
+      # Technical Notes
+
+      Focus on scalability and maintainability.
+    labels:
+      - "type::research"
+      - "priority::high"
+    assignee: "researcher1"
+
+  - id: design-task
+    title: "[Design] Create detailed design document"
+    description: |
+      # Description
+
+      Create detailed design based on research findings.
+
+      # Acceptance Criteria
+
+      - Design document created
+      - UML diagrams included
+      - Design review passed
+
+    labels:
+      - "type::design"
+    dependencies:
+      - research-task
+
+  - id: impl-core
+    title: "[Impl] Implement core functionality"
+    description: |
+      # Description
+
+      Implement core functionality according to approved design.
+
+      # Acceptance Criteria
+
+      - Code implemented
+      - Unit tests added and passing
+      - Code review passed
+
+    labels:
+      - "type::implementation"
+      - "priority::high"
+    assignee: "dev1"
+    dependencies:
+      - design-task
+
+  - id: impl-tests
+    title: "[Test] Add integration tests"
+    description: |
+      # Description
+
+      Add comprehensive integration test coverage.
+
+      # Acceptance Criteria
+
+      - Integration tests implemented
+      - All tests passing
+      - Coverage > 80%
+
+    labels:
+      - "type::test"
+    dependencies:
+      - impl-core

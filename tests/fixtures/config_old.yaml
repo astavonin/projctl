@@ -1,0 +1,34 @@
+# Legacy config format for regression testing
+gitlab:
+  default_group: "test/group"
+
+labels:
+  default:
+    - "type::feature"
+    - "development-status::backlog"
+
+  default_epic:
+    - "epic"
+
+  allowed_labels:
+    - "type::feature"
+    - "type::bug"
+    - "type::enhancement"
+    - "development-status::backlog"
+    - "development-status::in-progress"
+    - "development-status::done"
+    - "epic"
+    - "priority::high"
+    - "priority::medium"
+    - "priority::low"
+
+issue_template:
+  sections:
+    - name: "Description"
+      required: true
+    - name: "Acceptance Criteria"
+      required: true
+    - name: "Technical Notes"
+      required: false
+    - name: "References"
+      required: false

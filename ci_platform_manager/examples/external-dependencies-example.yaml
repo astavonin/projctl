@@ -1,0 +1,84 @@
+# Example YAML demonstrating enhanced dependency handling
+# This shows support for YAML-local IDs, external GitLab IIDs (integer and string formats)
+
+epic:
+  id: 21  # Use existing epic
+
+issues:
+  # Task 1: Depends on external GitLab issue #13
+  - id: "backend-impl"
+    title: "Implement Backend Service"
+    description: |
+      # Description
+      Implement the backend service based on approved design.
+
+      # Acceptance Criteria
+      - API endpoints implemented
+      - Unit tests pass
+      - Integration with existing issue #13
+    dependencies:
+      - 13  # External GitLab issue (integer format)
+    labels:
+      - "type::feature"
+    assignee: "dev-alice"
+
+  # Task 2: Depends on Task 1 (YAML-local) and external issue #42
+  - id: "frontend-impl"
+    title: "Implement Frontend Components"
+    description: |
+      # Description
+      Build frontend components that consume the backend API.
+
+      # Acceptance Criteria
+      - Components render correctly
+      - API integration works
+      - Tests pass
+    dependencies:
+      - "backend-impl"  # YAML-local dependency
+      - "#42"           # External GitLab issue (string format with #)
+    labels:
+      - "type::feature"
+    assignee: "dev-bob"
+
+  # Task 3: Mixed dependencies (YAML-local + external)
+  - id: "integration-tests"
+    title: "Write Integration Tests"
+    description: |
+      # Description
+      Create comprehensive integration tests for the full system.
+
+      # Acceptance Criteria
+      - End-to-end tests pass
+      - Coverage > 80%
+      - CI pipeline succeeds
+    dependencies:
+      - "backend-impl"   # YAML-local
+      - "frontend-impl"  # YAML-local
+      - 25               # External GitLab issue (integer)
+      - "#67"            # External GitLab issue (string)
+    labels:
+      - "type::test"
+
+  # Task 4: Example with numeric string as YAML-local ID
+  - id: "123"
+    title: "Task with Numeric ID"
+    description: |
+      # Description
+      This demonstrates that numeric strings are treated as YAML-local IDs.
+
+      # Acceptance Criteria
+      - Feature works as expected
+    labels:
+      - "type::feature"
+
+  # Task 5: Depends on numeric YAML ID (not external issue)
+  - id: "follow-up"
+    title: "Follow-up Task"
+    description: |
+      # Description
+      This task depends on the YAML task "123" above, NOT GitLab issue #123.
+
+      # Acceptance Criteria
+      - Depends on correct task
+    dependencies:
+      - "123"  # References YAML ID "123", not external issue #123
