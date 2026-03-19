@@ -32,9 +32,10 @@ ci_platform_manager/
 ├── config.py             # Multi-platform configuration
 ├── exceptions.py         # PlatformError and custom exceptions
 ├── handlers/             # Modular operation handlers
-│   ├── sync.py          # Planning folder sync (NEW)
+│   ├── sync.py          # Planning folder sync
 │   ├── loader.py        # Load issues/epics/milestones/MRs
 │   ├── creator.py       # Create issues/epics
+│   ├── updater.py       # Update issues/MRs/epics/milestones
 │   ├── search.py        # Search operations
 │   ├── comment.py       # Post MR comments
 │   └── mr_handler.py    # Create merge requests
@@ -344,6 +345,81 @@ ci-platform-manager search issues "bug" --state opened --limit 10
 ci-platform-manager search epics "video"
 ci-platform-manager search milestones "v1.0" --state active
 ```
+
+### Update Resources
+
+**Update issues, MRs, epics, and milestones:**
+```bash
+# Update issue title
+ci-platform-manager update issue 231 --title "New title"
+
+# Update issue description
+ci-platform-manager update issue 231 --description "New description"
+
+# Add and remove labels (repeatable flag)
+ci-platform-manager update issue 231 --add-label "type::fix" --remove-label "type::feature"
+
+# Assign to a user (username — resolved to numeric ID automatically)
+ci-platform-manager update issue 231 --assignee alice
+
+# Set milestone (title or iid — resolved to numeric ID automatically)
+ci-platform-manager update issue 231 --milestone "v2.0"
+
+# Change state (issue/MR/epic)
+ci-platform-manager update issue 231 --state close
+ci-platform-manager update issue 231 --state reopen
+
+# Update MR: title, assignee, reviewer, target branch
+ci-platform-manager update mr 144 --title "New title" --reviewer bob --target-branch main
+
+# Update epic title and state
+ci-platform-manager update epic 37 --title "New epic title" --state close
+
+# Update milestone due date and activate it
+ci-platform-manager update milestone 10 --due-date 2026-04-01 --state activate
+
+# Preview without executing (safe — no API calls at all)
+ci-platform-manager update issue 231 --dry-run --title "Preview" --add-label "type::fix"
+```
+
+**Reference formats (same as `load`):**
+```bash
+ci-platform-manager update issue 231 ...           # numeric IID
+ci-platform-manager update issue "#231" ...        # prefixed IID
+ci-platform-manager update mr "!144" ...           # MR prefixed format
+ci-platform-manager update mr https://gitlab.com/group/repo/-/merge_requests/144 ...  # full URL
+```
+
+**Flag reference:**
+
+| Flag | Applies to | Description |
+|------|-----------|-------------|
+| `--title` | all | New title |
+| `--description` | all | New description |
+| `--add-label LABEL` | all | Add label (repeatable) |
+| `--remove-label LABEL` | all | Remove label (repeatable) |
+| `--assignee USERNAME` | issue, mr | Assignee username (auto-resolved to numeric ID) |
+| `--reviewer USERNAME` | mr only | Reviewer username (auto-resolved to numeric ID) |
+| `--milestone TITLE_OR_IID` | issue, mr | Milestone by title or iid (auto-resolved to numeric ID) |
+| `--target-branch BRANCH` | mr only | Change MR target branch |
+| `--due-date YYYY-MM-DD` | milestone only | Set due date |
+| `--state EVENT` | all (restricted) | State transition (see below) |
+| `--dry-run` | all | Preview intent without any API calls |
+
+**State event rules:**
+
+| `--state` value | Valid for | Notes |
+|-----------------|-----------|-------|
+| `close` | issue, mr, epic | Closes the resource |
+| `reopen` | issue, mr, epic | Reopens the resource (not valid for milestone) |
+| `activate` | milestone only | Activates the milestone (not valid for issues/MRs/epics) |
+
+**Behavior notes:**
+- `--assignee` and `--reviewer` accept GitLab usernames; the tool resolves them to numeric user IDs before sending the API request.
+- `--milestone` accepts a milestone title (e.g. `"v2.0"`) or iid (e.g. `"5"`); resolved to the numeric database ID automatically.
+- `--dry-run` is fully safe: no API calls are made, not even the read needed for label merging. Label intent is shown as `<add: [...], remove: [...]>`.
+- At least one update flag must be provided; running with no flags returns an error.
+- Type-specific flags (`--reviewer`, `--target-branch`, `--due-date`) are rejected with an error if used on the wrong resource type.
 
 ### Merge Request Operations
 

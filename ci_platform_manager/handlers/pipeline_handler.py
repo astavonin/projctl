@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional
 
 from ..config import Config
 from ..exceptions import PlatformError
+from ..utils.git_helpers import get_current_repo_path
+from ..utils.glab_runner import run_glab_command
 
 logger = logging.getLogger(__name__)
 
@@ -25,31 +27,8 @@ class PipelineHandler:
         self._project_id_cache: Optional[str] = None
 
     def _run_glab_command(self, cmd: List[str]) -> str:
-        """Run a glab command and return its output.
-
-        Args:
-            cmd: List of command arguments to pass to glab.
-
-        Returns:
-            Command output as a string.
-
-        Raises:
-            PlatformError: If the command fails.
-        """
-        full_cmd = ["glab"] + cmd
-
-        try:
-            logger.debug("Executing: %s", " ".join(full_cmd))
-            result = subprocess.run(full_cmd, capture_output=True, text=True, check=True)
-            return result.stdout.strip()
-        except subprocess.CalledProcessError as err:
-            error_msg = f"Command failed: {' '.join(full_cmd)}\n{err.stderr}"
-            logger.error(error_msg)
-            raise PlatformError(error_msg) from err
-        except FileNotFoundError as err:
-            error_msg = "glab command not found. Please install glab CLI."
-            logger.error(error_msg)
-            raise PlatformError(error_msg) from err
+        """Delegate to shared glab runner."""
+        return run_glab_command(cmd)
 
     def get_current_branch(self) -> str:
         """Get current git branch name.
@@ -113,43 +92,12 @@ class PipelineHandler:
         Returns:
             Project path (e.g., 'group/project') or None if not detectable.
         """
-        try:
-            result = subprocess.run(
-                ["git", "remote", "get-url", "origin"],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            remote_url = result.stdout.strip()
-            logger.debug("Git remote URL: %s", remote_url)
-
-            # Parse GitLab project path from URL
-            # Formats:
-            # - https://gitlab.com/group/project.git
-            # - git@gitlab.com:group/project.git
-            if "gitlab.com" in remote_url or "gitlab" in remote_url:
-                # Extract path after gitlab.com/ or gitlab.com:
-                if ":" in remote_url:
-                    # SSH format: git@gitlab.com:group/project.git
-                    path = remote_url.split(":", 1)[1]
-                else:
-                    # HTTPS format: https://gitlab.com/group/project.git
-                    if "gitlab.com/" in remote_url:
-                        path = remote_url.split("gitlab.com/", 1)[1]
-                    else:
-                        path = remote_url.split("gitlab/", 1)[1]
-
-                # Remove .git suffix
-                project_path = path.replace(".git", "").strip("/")
-                logger.debug("Detected project: %s", project_path)
-                return project_path
-
+        project_path = get_current_repo_path()
+        if project_path:
+            logger.debug("Detected project: %s", project_path)
+        else:
             logger.debug("Remote URL does not appear to be GitLab")
-            return None
-
-        except (subprocess.CalledProcessError, IndexError) as err:
-            logger.debug("Failed to detect project from git remote: %s", err)
-            return None
+        return project_path
 
     def get_current_pipeline(self, branch: str) -> Dict[str, Any]:
         """Find the latest pipeline for a branch.

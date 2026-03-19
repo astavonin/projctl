@@ -120,8 +120,14 @@ class TestGetCurrentPipeline:
         with pytest.raises(PlatformError, match="No pipeline found"):
             handler.get_current_pipeline("feature/test")
 
-    def test_get_current_pipeline_no_config(self, tmp_path: Path) -> None:
-        """Missing config raises PlatformError."""
+    @patch(
+        "ci_platform_manager.handlers.pipeline_handler.PipelineHandler.get_project_from_remote",
+        return_value=None,
+    )
+    def test_get_current_pipeline_no_config(
+        self, mock_remote: Mock, tmp_path: Path
+    ) -> None:
+        """Missing config and no git remote raises PlatformError."""
         # Create minimal config without default_group
         config_file = tmp_path / "config.yaml"
         config_file.write_text("platform: gitlab\n")

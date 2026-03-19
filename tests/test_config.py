@@ -56,6 +56,8 @@ class TestConfigLoading:
     def test_no_config_found_error(self, temp_dir: Path, monkeypatch) -> None:
         """Raises FileNotFoundError when no config found."""
         monkeypatch.chdir(temp_dir)
+        # Redirect Path.home() to the temp dir so the user-level config is not found.
+        monkeypatch.setattr(Path, "home", lambda: temp_dir)
 
         with pytest.raises(FileNotFoundError, match="No config file found"):
             Config()
@@ -216,7 +218,7 @@ class TestPlanningSyncConfig:
         config_data = {
             "platform": "gitlab",
             "gitlab": {"default_group": "test/project"},
-            "planning_sync": {"gdrive_base": "~/GoogleDrive"}
+            "planning_sync": {"gdrive_base": "~/GoogleDrive"},
         }
         config_path = temp_dir / "config.yaml"
         with open(config_path, "w", encoding="utf-8") as file:
@@ -229,11 +231,8 @@ class TestPlanningSyncConfig:
         """planning_sync config is preserved during legacy transformation."""
         legacy_config = {
             "gitlab": {"default_group": "test/project"},
-            "labels": {
-                "default": ["type::feature"],
-                "allowed_labels": ["type::feature"]
-            },
-            "planning_sync": {"gdrive_base": "~/GoogleDrive"}
+            "labels": {"default": ["type::feature"], "allowed_labels": ["type::feature"]},
+            "planning_sync": {"gdrive_base": "~/GoogleDrive"},
         }
         config_path = temp_dir / "legacy.yaml"
         with open(config_path, "w", encoding="utf-8") as file:
@@ -247,10 +246,7 @@ class TestPlanningSyncConfig:
 
     def test_planning_sync_missing(self, temp_dir: Path) -> None:
         """planning_sync is empty dict when not configured."""
-        config_data = {
-            "platform": "gitlab",
-            "gitlab": {"default_group": "test/project"}
-        }
+        config_data = {"platform": "gitlab", "gitlab": {"default_group": "test/project"}}
         config_path = temp_dir / "config.yaml"
         with open(config_path, "w", encoding="utf-8") as file:
             yaml.dump(config_data, file)

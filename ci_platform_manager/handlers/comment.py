@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CommentPosition:
     """Position data for posting inline MR comments."""
+
     base_sha: str
     head_sha: str
 
@@ -32,7 +33,7 @@ def _normalize_location(loc: str) -> str:
     Returns:
         Normalized location with line number (e.g., "file.py:1" or "file.py:123")
     """
-    if ':' not in loc:
+    if ":" not in loc:
         return f"{loc}:1"
     return loc
 
@@ -47,9 +48,9 @@ def _process_finding_locations(finding: Dict[str, Any]) -> list:
         List of tuples (modified_finding, [location]) for posting
     """
     # Get locations (could be single 'location' or multiple 'locations')
-    locations = finding.get('locations', [])
-    if 'location' in finding:
-        locations = [finding['location']]
+    locations = finding.get("locations", [])
+    if "location" in finding:
+        locations = [finding["location"]]
 
     if not locations:
         return []
@@ -62,18 +63,109 @@ def _process_finding_locations(finding: Dict[str, Any]) -> list:
     inline_findings = []
 
     for loc in normalized_locations:
-        file_path = loc.rsplit(':', 1)[0]
+        file_path = loc.rsplit(":", 1)[0]
         if file_path not in files_seen:
             files_seen[file_path] = loc
             # Create a modified finding with all locations in this file
-            file_locations = [location for location in normalized_locations if location.startswith(file_path + ':')]
+            file_locations = [
+                location
+                for location in normalized_locations
+                if location.startswith(file_path + ":")
+            ]
             modified_finding = finding.copy()
             if len(file_locations) > 1:
                 # Add note about other lines in the same file
-                modified_finding['_extra_locations'] = file_locations[1:]
+                modified_finding["_extra_locations"] = file_locations[1:]
             inline_findings.append((modified_finding, [files_seen[file_path]]))
 
     return inline_findings
+
+
+def _load_review_data(review_file: str) -> tuple:
+    """Load and validate review YAML, returning (review_data, mr_number) or raising on error.
+
+    Args:
+        review_file: Path to the review YAML file.
+
+    Returns:
+        Tuple of (review_data dict, mr_number or None).
+
+    Raises:
+        FileNotFoundError: If the review file does not exist.
+        ValueError: If required fields are missing.
+        yaml.YAMLError: If the YAML is invalid.
+    """
+    if not Path(review_file).exists():
+        raise FileNotFoundError(f"Review file not found: {review_file}")
+
+    with open(review_file, "r", encoding="utf-8") as yaml_file:
+        review_data = yaml.safe_load(yaml_file)
+
+    if "findings" not in review_data:
+        raise ValueError("Review YAML must contain 'findings' field")
+
+    return review_data, review_data.get("mr_number")
+
+
+def _fetch_mr_position(mr_number: int) -> "CommentPosition | None":
+    """Fetch base and head SHAs for an MR to build inline comment positions.
+
+    Args:
+        mr_number: The MR iid.
+
+    Returns:
+        CommentPosition if both SHAs are available, None otherwise.
+    """
+    logger.debug("Fetching MR !%s details", mr_number)
+    mr_info_cmd = ["glab", "mr", "view", str(mr_number), "--output", "json"]
+    result = subprocess.run(mr_info_cmd, capture_output=True, text=True, check=True)
+    mr_info = json.loads(result.stdout)
+
+    head_sha = mr_info.get("sha") or mr_info.get("diff_refs", {}).get("head_sha")
+    base_sha = mr_info.get("diff_refs", {}).get("base_sha")
+
+    if not head_sha or not base_sha:
+        return None
+    return CommentPosition(base_sha=base_sha, head_sha=head_sha)
+
+
+def _post_inline_findings(
+    mr_number: int,
+    findings: list,
+    position: "CommentPosition",
+    dry_run: bool,
+) -> tuple:
+    """Process findings and post them as inline comments.
+
+    Args:
+        mr_number: The MR iid.
+        findings: List of finding dicts from review YAML.
+        position: CommentPosition with base and head SHAs.
+        dry_run: If True, only print what would be done.
+
+    Returns:
+        Tuple of (posted_count, failed_count).
+    """
+    posted_count, failed_count = 0, 0
+    for finding in findings:
+        finding_results = _process_finding_locations(finding)
+        if not finding_results:
+            logger.warning("Finding '%s' has no location, skipping", finding.get("title"))
+            continue
+        for located_finding, locations in finding_results:
+            for location in locations:
+                success = post_inline_comment(
+                    mr_number=mr_number,
+                    finding=located_finding,
+                    location=location,
+                    position=position,
+                    dry_run=dry_run,
+                )
+                if success:
+                    posted_count += 1
+                else:
+                    failed_count += 1
+    return posted_count, failed_count
 
 
 def cmd_comment(args) -> int:
@@ -88,75 +180,35 @@ def cmd_comment(args) -> int:
         Exit code (0 for success, 1 for error).
     """
     try:
-        # Check if review file exists
-        if not Path(args.review_file).exists():
-            logger.error("Review file not found: %s", args.review_file)
-            return 1
+        review_data, yaml_mr_number = _load_review_data(args.review_file)
 
-        # Load review YAML
-        with open(args.review_file, 'r', encoding='utf-8') as yaml_file:
-            review_data = yaml.safe_load(yaml_file)
-
-        # Validate required fields
-        if 'findings' not in review_data:
-            logger.error("Review YAML must contain 'findings' field")
-            return 1
-
-        # Get MR number from args or from YAML
-        mr_number = args.mr_number or review_data.get('mr_number')
+        mr_number = args.mr_number or yaml_mr_number
         if mr_number is None:
             logger.error("MR number must be specified via --mr or in review YAML")
             return 1
 
-        # Get MR details to obtain commit SHAs
-        logger.debug("Fetching MR !%s details", mr_number)
-        mr_info_cmd = ['glab', 'mr', 'view', str(mr_number), '--output', 'json']
-        result = subprocess.run(mr_info_cmd, capture_output=True, text=True, check=True)
-        mr_info = json.loads(result.stdout)
-
-        # Extract commit SHAs for posting diff comments
-        head_sha = mr_info.get('sha') or mr_info.get('diff_refs', {}).get('head_sha')
-        base_sha = mr_info.get('diff_refs', {}).get('base_sha')
-
-        if not head_sha or not base_sha:
+        position = _fetch_mr_position(mr_number)
+        if position is None:
             logger.error("Could not get commit SHAs from MR. Falling back to general comment.")
-            # Fallback to single comment
             return post_general_comment(mr_number, review_data, args.dry_run)
 
-        # Process findings and group by file
-        findings = review_data.get('findings', [])
-        inline_findings = []
-
-        for finding in findings:
-            finding_results = _process_finding_locations(finding)
-            if finding_results:
-                inline_findings.extend(finding_results)
-            else:
-                logger.warning("Finding '%s' has no location, skipping", finding.get('title'))
-
-        # Post all findings as inline comments
-        posted_count, failed_count = 0, 0
-        position = CommentPosition(base_sha=base_sha, head_sha=head_sha)
-
-        for finding, locations in inline_findings:
-            for location in locations:
-                success = post_inline_comment(
-                    mr_number=mr_number,
-                    finding=finding,
-                    location=location,
-                    position=position,
-                    dry_run=args.dry_run
-                )
-
-                if success:
-                    posted_count += 1
-                else:
-                    failed_count += 1
+        findings = review_data.get("findings", [])
+        posted_count, failed_count = _post_inline_findings(
+            mr_number, findings, position, args.dry_run
+        )
 
         if args.dry_run:
-            print(f"\n[DRY RUN] Would post {posted_count} inline comments ({failed_count} failed) to MR !{mr_number}")
+            print(
+                f"\n[DRY RUN] Would post {posted_count} inline comments "
+                f"({failed_count} failed) to MR !{mr_number}"
+            )
         else:
-            logger.info("✓ Posted %d inline comments to MR !%s (%d failed)", posted_count, mr_number, failed_count)
+            logger.info(
+                "✓ Posted %d inline comments to MR !%s (%d failed)",
+                posted_count,
+                mr_number,
+                failed_count,
+            )
 
         return 0
 
@@ -173,7 +225,7 @@ def post_inline_comment(
     finding: Dict[str, Any],
     location: str,
     position: CommentPosition,
-    dry_run: bool = False
+    dry_run: bool = False,
 ) -> bool:
     """Post an inline comment on a specific line in the MR diff.
 
@@ -189,30 +241,30 @@ def post_inline_comment(
     """
     try:
         # Parse location (format: "path/to/file.cc:123" or "path/to/file.cc:123-145")
-        if ':' not in location:
+        if ":" not in location:
             logger.warning("Invalid location format: %s (expected 'file:line')", location)
             return False
 
-        file_path, line_part = location.rsplit(':', 1)
+        file_path, line_part = location.rsplit(":", 1)
 
         # Handle line ranges (use start line)
-        if '-' in line_part:
-            line_num = int(line_part.split('-')[0])
+        if "-" in line_part:
+            line_num = int(line_part.split("-")[0])
         else:
             line_num = int(line_part)
 
         # Format comment body
-        severity = finding.get('severity', 'Unknown')
-        title = finding.get('title', 'Untitled')
-        description = finding.get('description', '').strip()
-        fix = finding.get('fix', '').strip()
-        extra_locations = finding.get('_extra_locations', [])
+        severity = finding.get("severity", "Unknown")
+        title = finding.get("title", "Untitled")
+        description = finding.get("description", "").strip()
+        fix = finding.get("fix", "").strip()
+        extra_locations = finding.get("_extra_locations", [])
 
         comment_body = f"**{severity}: {title}**\n\n{description}"
 
         # Add other affected lines in the same file
         if extra_locations:
-            lines = [loc.split(':')[-1] for loc in extra_locations]
+            lines = [loc.split(":")[-1] for loc in extra_locations]
             comment_body += f"\n\n**Also affects lines:** {', '.join(lines)}"
 
         if fix:
@@ -235,27 +287,25 @@ def post_inline_comment(
                 "new_line": line_num,
                 "base_sha": position.base_sha,
                 "start_sha": position.base_sha,
-                "head_sha": position.head_sha
-            }
+                "head_sha": position.head_sha,
+            },
         }
 
         # Post using GitLab API via glab with JSON input and Content-Type header
         cmd = [
-            'glab', 'api',
-            f'projects/:id/merge_requests/{mr_number}/discussions',
-            '--method', 'POST',
-            '--header', 'Content-Type: application/json',
-            '--input', '-'
+            "glab",
+            "api",
+            f"projects/:id/merge_requests/{mr_number}/discussions",
+            "--method",
+            "POST",
+            "--header",
+            "Content-Type: application/json",
+            "--input",
+            "-",
         ]
 
         logger.debug("Posting comment to %s:%d", file_path, line_num)
-        subprocess.run(
-            cmd,
-            input=json.dumps(payload),
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        subprocess.run(cmd, input=json.dumps(payload), capture_output=True, text=True, check=True)
 
         logger.info("✓ Posted comment on %s:%d", file_path, line_num)
         return True
@@ -292,7 +342,7 @@ def post_general_comment(mr_number: int, review_data: Dict[str, Any], dry_run: b
             print("=" * 80)
             return 0
 
-        cmd = ['glab', 'mr', 'comment', str(mr_number), '--message', comment]
+        cmd = ["glab", "mr", "comment", str(mr_number), "--message", comment]
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
 
         logger.info("✓ Posted general comment to MR !%s", mr_number)
@@ -316,24 +366,24 @@ def format_review_comment(review_data: Dict[str, Any]) -> str:
     lines = []
 
     # Header
-    title = review_data.get('title', 'Code Review')
-    review_date = review_data.get('review_date', '')
+    title = review_data.get("title", "Code Review")
+    review_date = review_data.get("review_date", "")
     lines.append(f"# Code Review: {title}")
     if review_date:
         lines.append(f"**Review Date:** {review_date}")
     lines.append("")
 
     # Group findings by severity
-    findings = review_data.get('findings', [])
+    findings = review_data.get("findings", [])
     severity_groups: Dict[str, List[Dict[str, Any]]] = {}
     for finding in findings:
-        severity = finding.get('severity', 'Unknown')
+        severity = finding.get("severity", "Unknown")
         if severity not in severity_groups:
             severity_groups[severity] = []
         severity_groups[severity].append(finding)
 
     # Output findings by severity (Critical, High, Medium, Low)
-    severity_order = ['Critical', 'High', 'Medium', 'Low']
+    severity_order = ["Critical", "High", "Medium", "Low"]
     finding_num = 1
 
     for severity in severity_order:
@@ -344,11 +394,11 @@ def format_review_comment(review_data: Dict[str, Any]) -> str:
         lines.append("")
 
         for finding in severity_groups[severity]:
-            title = finding.get('title', 'Untitled')
-            description = finding.get('description', '').strip()
-            location = finding.get('location')
-            locations = finding.get('locations', [])
-            fix = finding.get('fix', '').strip()
+            title = finding.get("title", "Untitled")
+            description = finding.get("description", "").strip()
+            location = finding.get("location")
+            locations = finding.get("locations", [])
+            fix = finding.get("fix", "").strip()
 
             lines.append(f"### {finding_num}. {title}")
             finding_num += 1

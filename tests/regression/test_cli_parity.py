@@ -4,6 +4,7 @@ Ensures CLI commands produce identical output to old version.
 """
 
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -18,7 +19,9 @@ class TestCLICommandAvailability:
     def test_help_command_works(self) -> None:
         """Help command should work."""
         result = subprocess.run(
-            ["python", "-m", "ci_platform_manager", "--help"], capture_output=True, text=True
+            [sys.executable, "-m", "ci_platform_manager", "--help"],
+            capture_output=True,
+            text=True,
         )
 
         assert result.returncode == 0
@@ -27,7 +30,7 @@ class TestCLICommandAvailability:
     def test_create_command_exists(self) -> None:
         """Create command should be available."""
         result = subprocess.run(
-            ["python", "-m", "ci_platform_manager", "create", "--help"],
+            [sys.executable, "-m", "ci_platform_manager", "create", "--help"],
             capture_output=True,
             text=True,
         )
@@ -38,7 +41,7 @@ class TestCLICommandAvailability:
     def test_load_command_exists(self) -> None:
         """Load command should be available."""
         result = subprocess.run(
-            ["python", "-m", "ci_platform_manager", "load", "--help"],
+            [sys.executable, "-m", "ci_platform_manager", "load", "--help"],
             capture_output=True,
             text=True,
         )
@@ -48,7 +51,7 @@ class TestCLICommandAvailability:
     def test_search_command_exists(self) -> None:
         """Search command should be available."""
         result = subprocess.run(
-            ["python", "-m", "ci_platform_manager", "search", "--help"],
+            [sys.executable, "-m", "ci_platform_manager", "search", "--help"],
             capture_output=True,
             text=True,
         )
@@ -58,7 +61,7 @@ class TestCLICommandAvailability:
     def test_comment_command_exists(self) -> None:
         """Comment command should be available."""
         result = subprocess.run(
-            ["python", "-m", "ci_platform_manager", "comment", "--help"],
+            [sys.executable, "-m", "ci_platform_manager", "comment", "--help"],
             capture_output=True,
             text=True,
         )
@@ -68,7 +71,7 @@ class TestCLICommandAvailability:
     def test_create_mr_command_exists(self) -> None:
         """Create-mr command should be available."""
         result = subprocess.run(
-            ["python", "-m", "ci_platform_manager", "create-mr", "--help"],
+            [sys.executable, "-m", "ci_platform_manager", "create-mr", "--help"],
             capture_output=True,
             text=True,
         )
@@ -82,7 +85,7 @@ class TestLegacyWrapperParity:
     def test_old_script_wrapper_works(self) -> None:
         """Legacy glab_tasks_management.py should still work."""
         result = subprocess.run(
-            ["python", "glab-management/glab_tasks_management.py", "--help"],
+            [sys.executable, "glab-management/glab_tasks_management.py", "--help"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent.parent,
@@ -94,7 +97,7 @@ class TestLegacyWrapperParity:
     def test_old_script_shows_deprecation(self) -> None:
         """Legacy script should show deprecation warning."""
         result = subprocess.run(
-            ["python", "glab-management/glab_tasks_management.py", "--help"],
+            [sys.executable, "glab-management/glab_tasks_management.py", "--help"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent.parent,
@@ -173,7 +176,7 @@ class TestCLIOptions:
     def test_config_option_works(self, new_config_path: Path) -> None:
         """--config option should work."""
         result = subprocess.run(
-            ["python", "-m", "ci_platform_manager", "--config", str(new_config_path), "--help"],
+            [sys.executable, "-m", "ci_platform_manager", "--config", str(new_config_path), "--help"],
             capture_output=True,
             text=True,
         )
@@ -184,7 +187,7 @@ class TestCLIOptions:
         """--dry-run option should work for create command."""
         result = subprocess.run(
             [
-                "python",
+                sys.executable,
                 "-m",
                 "ci_platform_manager",
                 "--config",
@@ -251,9 +254,13 @@ class TestReferenceFormats:
         """%123 reference format should work."""
         import json
 
-        milestone_data = {"id": 123, "iid": 1, "title": "v1.0", "state": "active"}
+        # new_config has default_group set, so the group milestones list API is called
+        # first (returns a list), then the individual milestone endpoint (returns a dict),
+        # and finally the issues endpoint (returns an empty list).
+        milestone_data = {"id": 999, "iid": 1, "title": "v1.0", "state": "active"}
 
         mock_run.side_effect = [
+            Mock(stdout=json.dumps([milestone_data]), returncode=0),
             Mock(stdout=json.dumps(milestone_data), returncode=0),
             Mock(stdout="[]", returncode=0),
         ]
@@ -319,14 +326,20 @@ class TestReferenceFormats:
 class TestErrorHandling:
     """Test error handling parity."""
 
-    def test_missing_config_error(self, temp_dir: Path, monkeypatch) -> None:
+    def test_missing_config_error(self, temp_dir: Path) -> None:
         """Missing config should show helpful error."""
-        monkeypatch.chdir(temp_dir)
+        import os
+
+        # Override HOME so the subprocess cannot find any user-level config, and
+        # run from temp_dir which has no project-local config files either.
+        env = {**os.environ, "HOME": str(temp_dir)}
 
         result = subprocess.run(
-            ["python", "-m", "ci_platform_manager", "load", "issue", "#123"],
+            [sys.executable, "-m", "ci_platform_manager", "load", "issue", "#123"],
             capture_output=True,
             text=True,
+            cwd=str(temp_dir),
+            env=env,
         )
 
         # Should fail with error about missing config
@@ -343,5 +356,8 @@ class TestErrorHandling:
             ["ci-platform-manager", "--config", str(new_config_path), "load", "issue", "#123"],
         )
 
-        with pytest.raises(SystemExit):
-            main()
+        # main() returns an exit code; sys.exit() is called by __main__.py.
+        # A missing glab CLI is surfaced as a PlatformError, which cmd_load
+        # catches and converts to a non-zero return code.
+        result = main()
+        assert result != 0

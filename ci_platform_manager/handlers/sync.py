@@ -3,13 +3,23 @@
 import logging
 import os
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import Config
 from ..exceptions import PlatformError
 
-
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _SyncPaths:
+    """Grouping of all path attributes used by PlanningSyncHandler."""
+
+    planning_path: Path
+    gdrive_base: Path
+    gdrive_planning_base: Path
+    gdrive_repo_path: Path
 
 
 class PlanningSyncHandler:
@@ -35,11 +45,10 @@ class PlanningSyncHandler:
         # Auto-detect repository and planning folder
         self.repo_name = self._detect_repo_name()
         self.repo_root = self._get_repo_root()
-        self.planning_path = self._get_planning_path()
 
         # Get Google Drive base from config
-        planning_sync = getattr(config, 'planning_sync', {})
-        gdrive_base = planning_sync.get('gdrive_base')
+        planning_sync = getattr(config, "planning_sync", {})
+        gdrive_base = planning_sync.get("gdrive_base")
 
         if not gdrive_base:
             raise PlatformError(
@@ -49,10 +58,34 @@ class PlanningSyncHandler:
                 "  gdrive_base: ~/GoogleDrive"
             )
 
-        # Expand user path (~/GoogleDrive -> /home/user/GoogleDrive)
-        self.gdrive_base = Path(os.path.expanduser(gdrive_base))
-        self.gdrive_planning_base = self.gdrive_base / 'backup' / 'planning'
-        self.gdrive_repo_path = self.gdrive_planning_base / self.repo_name
+        gdrive_base_path = Path(os.path.expanduser(gdrive_base))
+        gdrive_planning_base = gdrive_base_path / "backup" / "planning"
+        self.paths = _SyncPaths(
+            planning_path=self._get_planning_path(),
+            gdrive_base=gdrive_base_path,
+            gdrive_planning_base=gdrive_planning_base,
+            gdrive_repo_path=gdrive_planning_base / self.repo_name,
+        )
+
+    @property
+    def planning_path(self) -> Path:
+        """Local planning folder path."""
+        return self.paths.planning_path
+
+    @property
+    def gdrive_base(self) -> Path:
+        """Google Drive base path."""
+        return self.paths.gdrive_base
+
+    @property
+    def gdrive_planning_base(self) -> Path:
+        """Google Drive planning backup base path."""
+        return self.paths.gdrive_planning_base
+
+    @property
+    def gdrive_repo_path(self) -> Path:
+        """Google Drive path for this repository's planning folder."""
+        return self.paths.gdrive_repo_path
 
     def _get_repo_root(self) -> Path:
         """Get the git repository root directory.
@@ -65,16 +98,11 @@ class PlanningSyncHandler:
         """
         try:
             result = subprocess.run(
-                ['git', 'rev-parse', '--show-toplevel'],
-                capture_output=True,
-                text=True,
-                check=True
+                ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True
             )
             return Path(result.stdout.strip())
         except subprocess.CalledProcessError as err:
-            raise PlatformError(
-                "Not in a git repository. Planning sync requires git."
-            ) from err
+            raise PlatformError("Not in a git repository. Planning sync requires git.") from err
 
     def _detect_repo_name(self) -> str:
         """Detect current git repository name.
@@ -99,7 +127,7 @@ class PlanningSyncHandler:
         Raises:
             PlatformError: If planning folder doesn't exist.
         """
-        planning_path = self.repo_root / 'planning'
+        planning_path = self.repo_root / "planning"
 
         if not planning_path.exists():
             raise PlatformError(
@@ -108,9 +136,7 @@ class PlanningSyncHandler:
             )
 
         if not planning_path.is_dir():
-            raise PlatformError(
-                f"Planning path exists but is not a directory: {planning_path}"
-            )
+            raise PlatformError(f"Planning path exists but is not a directory: {planning_path}")
 
         return planning_path
 
@@ -121,11 +147,7 @@ class PlanningSyncHandler:
             PlatformError: If rsync is not installed.
         """
         try:
-            subprocess.run(
-                ['rsync', '--version'],
-                capture_output=True,
-                check=True
-            )
+            subprocess.run(["rsync", "--version"], capture_output=True, check=True)
         except (subprocess.CalledProcessError, FileNotFoundError) as err:
             raise PlatformError(
                 "rsync is not installed or not available in PATH.\n\n"
@@ -151,20 +173,20 @@ class PlanningSyncHandler:
 
         # Build rsync command
         rsync_cmd = [
-            'rsync',
-            '-av',  # archive mode, verbose
-            '--delete',  # delete files in target that don't exist in source
-            '--exclude=*.swp',  # exclude vim swap files
-            '--exclude=*~',  # exclude backup files
-            '--exclude=.DS_Store',  # exclude macOS metadata
+            "rsync",
+            "-av",  # archive mode, verbose
+            "--delete",  # delete files in target that don't exist in source
+            "--exclude=*.swp",  # exclude vim swap files
+            "--exclude=*~",  # exclude backup files
+            "--exclude=.DS_Store",  # exclude macOS metadata
         ]
 
         if self.dry_run:
-            rsync_cmd.append('--dry-run')
+            rsync_cmd.append("--dry-run")
 
         rsync_cmd.extend([source_str, target_str])
 
-        logger.debug("Executing rsync: %s", ' '.join(rsync_cmd))
+        logger.debug("Executing rsync: %s", " ".join(rsync_cmd))
 
         if self.dry_run:
             print(f"\n[DRY RUN] {description}")
@@ -173,12 +195,7 @@ class PlanningSyncHandler:
             print(f"  Command: {' '.join(rsync_cmd)}\n")
 
         try:
-            result = subprocess.run(
-                rsync_cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            result = subprocess.run(rsync_cmd, capture_output=True, text=True, check=True)
 
             if self.dry_run:
                 print("Preview of changes:")
@@ -189,8 +206,7 @@ class PlanningSyncHandler:
 
         except subprocess.CalledProcessError as err:
             raise PlatformError(
-                f"rsync failed: {err.stderr}\n\n"
-                f"Command: {' '.join(rsync_cmd)}"
+                f"rsync failed: {err.stderr}\n\n" f"Command: {' '.join(rsync_cmd)}"
             ) from err
 
     def push(self) -> None:
@@ -216,9 +232,7 @@ class PlanningSyncHandler:
 
         description = f"Push {self.repo_name} planning → Google Drive"
         self._run_rsync(
-            source=self.planning_path,
-            target=self.gdrive_repo_path,
-            description=description
+            source=self.planning_path, target=self.gdrive_repo_path, description=description
         )
 
         if not self.dry_run:
@@ -240,9 +254,7 @@ class PlanningSyncHandler:
         if not self.gdrive_repo_path.exists():
             if self.gdrive_planning_base.exists():
                 available = "\n".join(
-                    f"  - {p.name}"
-                    for p in self.gdrive_planning_base.iterdir()
-                    if p.is_dir()
+                    f"  - {p.name}" for p in self.gdrive_planning_base.iterdir() if p.is_dir()
                 )
                 error_msg = (
                     f"Planning folder not found in Google Drive: {self.gdrive_repo_path}\n\n"
@@ -262,9 +274,7 @@ class PlanningSyncHandler:
 
         description = f"Pull {self.repo_name} planning ← Google Drive"
         self._run_rsync(
-            source=self.gdrive_repo_path,
-            target=self.planning_path,
-            description=description
+            source=self.gdrive_repo_path, target=self.planning_path, description=description
         )
 
         if not self.dry_run:

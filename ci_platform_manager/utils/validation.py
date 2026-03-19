@@ -38,7 +38,9 @@ def validate_labels(labels: List[str], allowed_labels: Optional[List[str]] = Non
         )
 
 
-def validate_issue_description(description: str, required_sections: List[str], issue_title: str = "unknown") -> None:
+def validate_issue_description(
+    description: str, required_sections: List[str], issue_title: str = "unknown"
+) -> None:
     """Validate that issue description contains required sections.
 
     Args:
@@ -53,10 +55,9 @@ def validate_issue_description(description: str, required_sections: List[str], i
         return
 
     if not description:
-        missing = ', '.join(required_sections)
+        missing = ", ".join(required_sections)
         raise ValueError(
-            f"Issue '{issue_title}' has no description. "
-            f"Required sections: {missing}"
+            f"Issue '{issue_title}' has no description. " f"Required sections: {missing}"
         )
 
     missing_sections = []
@@ -66,7 +67,5 @@ def validate_issue_description(description: str, required_sections: List[str], i
             missing_sections.append(section)
 
     if missing_sections:
-        missing = ', '.join(missing_sections)
-        raise ValueError(
-            f"Issue '{issue_title}' missing required sections: {missing}"
-        )
+        missing = ", ".join(missing_sections)
+        raise ValueError(f"Issue '{issue_title}' missing required sections: {missing}")

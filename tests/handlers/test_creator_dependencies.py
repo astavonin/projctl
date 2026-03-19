@@ -118,18 +118,14 @@ class TestGetProjectIdForValidation:
     """Test project ID extraction for validation."""
 
     @patch("ci_platform_manager.utils.git_helpers.subprocess.run")
-    def test_get_project_id_gitlab_url(
-        self, mock_run: Mock, new_config_path: Path
-    ) -> None:
+    def test_get_project_id_gitlab_url(self, mock_run: Mock, new_config_path: Path) -> None:
         """Test extraction from GitLab URL."""
         config = Config(new_config_path)
         creator = EpicIssueCreator(config)
 
         # Mock git remote get-url origin returning GitLab URL
         mock_run.return_value = Mock(
-            stdout="https://gitlab.com/namespace/project.git\n",
-            stderr="",
-            returncode=0
+            stdout="https://gitlab.com/namespace/project.git\n", stderr="", returncode=0
         )
 
         project_id = creator._get_project_id_for_validation()
@@ -140,18 +136,14 @@ class TestGetProjectIdForValidation:
         assert call_args == ["git", "remote", "get-url", "origin"]
 
     @patch("ci_platform_manager.utils.git_helpers.subprocess.run")
-    def test_get_project_id_github_url(
-        self, mock_run: Mock, new_config_path: Path
-    ) -> None:
+    def test_get_project_id_github_url(self, mock_run: Mock, new_config_path: Path) -> None:
         """Test extraction from GitHub URL."""
         config = Config(new_config_path)
         creator = EpicIssueCreator(config)
 
         # Mock git remote get-url origin returning GitHub URL
         mock_run.return_value = Mock(
-            stdout="https://github.com/namespace/project.git\n",
-            stderr="",
-            returncode=0
+            stdout="https://github.com/namespace/project.git\n", stderr="", returncode=0
         )
 
         project_id = creator._get_project_id_for_validation()
@@ -168,9 +160,7 @@ class TestGetProjectIdForValidation:
 
         # Mock git remote returning URL without .git suffix
         mock_run.return_value = Mock(
-            stdout="https://gitlab.com/namespace/project\n",
-            stderr="",
-            returncode=0
+            stdout="https://gitlab.com/namespace/project\n", stderr="", returncode=0
         )
 
         project_id = creator._get_project_id_for_validation()
@@ -178,18 +168,14 @@ class TestGetProjectIdForValidation:
         assert project_id == "namespace/project"
 
     @patch("ci_platform_manager.utils.git_helpers.subprocess.run")
-    def test_get_project_id_ssh_format(
-        self, mock_run: Mock, new_config_path: Path
-    ) -> None:
+    def test_get_project_id_ssh_format(self, mock_run: Mock, new_config_path: Path) -> None:
         """Test extraction from SSH format URL."""
         config = Config(new_config_path)
         creator = EpicIssueCreator(config)
 
         # Mock git remote returning SSH format
         mock_run.return_value = Mock(
-            stdout="git@gitlab.com:namespace/project.git\n",
-            stderr="",
-            returncode=0
+            stdout="git@gitlab.com:namespace/project.git\n", stderr="", returncode=0
         )
 
         project_id = creator._get_project_id_for_validation()
@@ -197,9 +183,7 @@ class TestGetProjectIdForValidation:
         assert project_id == "namespace/project"
 
     @patch("ci_platform_manager.utils.git_helpers.subprocess.run")
-    def test_get_project_id_not_in_git_repo(
-        self, mock_run: Mock, new_config_path: Path
-    ) -> None:
+    def test_get_project_id_not_in_git_repo(self, mock_run: Mock, new_config_path: Path) -> None:
         """Test when not in a git repository."""
         config = Config(new_config_path)
         creator = EpicIssueCreator(config)

@@ -71,7 +71,6 @@ disallow_untyped_defs = false
 [tool.pylint.main]
 jobs = 4
 persistent = true
-suggestion-mode = true
 
 [tool.pylint.messages_control]
 disable = [

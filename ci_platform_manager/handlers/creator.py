@@ -2,7 +2,6 @@
 
 import json
 import logging
-import subprocess
 import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -14,6 +13,9 @@ except ImportError as exc:
 
 from ..config import Config
 from ..exceptions import PlatformError
+from ..utils.git_helpers import parse_issue_url
+from ..utils.glab_runner import run_glab_command
+from ..utils.validation import validate_issue_description, validate_labels
 
 logger = logging.getLogger(__name__)
 
@@ -35,35 +37,21 @@ class EpicIssueCreator:
         self.issue_id_mapping: Dict[str, Dict[str, str]] = {}  # yaml_id -> {'iid': ..., 'url': ...}
 
     def _run_glab_command(self, cmd: List[str]) -> str:
-        """Run a glab command and return its output.
+        """Run a glab command, skipping execution in dry-run mode.
 
         Args:
             cmd: List of command arguments to pass to glab.
 
         Returns:
-            Command output as a string.
+            Command output as a string, or empty string in dry-run mode.
 
         Raises:
             PlatformError: If the command fails.
         """
-        full_cmd = ["glab"] + cmd
-
         if self.dry_run:
-            logger.info("[DRY RUN] Would execute: %s", " ".join(full_cmd))
+            logger.info("[DRY RUN] Would execute: glab %s", " ".join(cmd))
             return ""
-
-        try:
-            logger.debug("Executing: %s", " ".join(full_cmd))
-            result = subprocess.run(full_cmd, capture_output=True, text=True, check=True)
-            return result.stdout.strip()
-        except subprocess.CalledProcessError as err:
-            error_msg = f"Command failed: {' '.join(full_cmd)}\n{err.stderr}"
-            logger.error(error_msg)
-            raise PlatformError(error_msg) from err
-        except FileNotFoundError as err:
-            error_msg = "glab command not found. Please install glab CLI."
-            logger.error(error_msg)
-            raise PlatformError(error_msg) from err
+        return run_glab_command(cmd)
 
     def create_epic(self, epic_config: Dict[str, Any]) -> str:
         """Create a new epic or return existing epic ID.
@@ -179,29 +167,11 @@ class EpicIssueCreator:
         Raises:
             ValueError: If required sections are missing from description.
         """
-        required_sections = self.config.get_required_sections()
-        if not required_sections:
-            return
-
-        description = issue_config.get("description", "")
-        if not description:
-            missing = ", ".join(required_sections)
-            raise ValueError(
-                f"Issue '{issue_config.get('title', 'unknown')}' has no description. "
-                f"Required sections: {missing}"
-            )
-
-        missing_sections = []
-        for section in required_sections:
-            # Look for "# Section" or "## Section" patterns
-            if f"# {section}" not in description:
-                missing_sections.append(section)
-
-        if missing_sections:
-            missing = ", ".join(missing_sections)
-            raise ValueError(
-                f"Issue '{issue_config.get('title', 'unknown')}' missing required sections: {missing}"
-            )
+        validate_issue_description(
+            description=issue_config.get("description", ""),
+            required_sections=self.config.get_required_sections(),
+            issue_title=issue_config.get("title", "unknown"),
+        )
 
     def _validate_issue_labels(self, labels: List[str]) -> None:
         """Validate that issue labels are in the allowed list.
@@ -212,30 +182,7 @@ class EpicIssueCreator:
         Raises:
             ValueError: If any label is not in the allowed list.
         """
-        allowed_labels = self.config.get_allowed_labels()
-        if allowed_labels is None:
-            # No validation configured
-            return
-
-        if not allowed_labels:
-            # Empty allowed list means no labels are allowed
-            if labels:
-                raise ValueError(
-                    f"Labels are not allowed (allowed_labels is empty), but found: {', '.join(labels)}"
-                )
-            return
-
-        # Check each label
-        unknown_labels = []
-        for label in labels:
-            if label not in allowed_labels:
-                unknown_labels.append(label)
-
-        if unknown_labels:
-            raise ValueError(
-                f"Unknown labels found: {', '.join(unknown_labels)}\n"
-                f"Allowed labels are: {', '.join(allowed_labels)}"
-            )
+        validate_labels(labels, self.config.get_allowed_labels())
 
     def create_issue(self, issue_config: Dict[str, Any], epic_id: Optional[str] = None) -> str:
         """Create a GitLab issue.
@@ -401,32 +348,20 @@ class EpicIssueCreator:
         Returns:
             Global issue ID as string, or None if not found.
         """
-        # Extract project path and iid from URL
-        # URL format: https://gitlab.../group/project/-/issues/123
-        if "/-/issues/" in issue_id:
-            parts = issue_id.split("/-/issues/")
-            if len(parts) == 2:
-                project_url = parts[0]
-                iid = parts[1].split("/")[0].split("?")[0]
+        # Extract project path and iid from URL using shared utility
+        project_path, iid = parse_issue_url(issue_id)
+        if project_path is not None and iid is not None:
+            encoded_project = urllib.parse.quote(project_path, safe="")
+            api_endpoint = f"projects/{encoded_project}/issues/{iid}"
 
-                # Extract project path from URL
-                # Format: https://gitlab.example.com/group/subgroup/project
-                if "//" in project_url:
-                    project_path = "/".join(project_url.split("//")[1].split("/")[1:])
-                else:
-                    project_path = project_url
-
-                encoded_project = urllib.parse.quote(project_path, safe="")
-                api_endpoint = f"projects/{encoded_project}/issues/{iid}"
-
-                try:
-                    output = self._run_glab_command(["api", api_endpoint])
-                    if output:
-                        data = json.loads(output)
-                        return str(data.get("id"))
-                except (PlatformError, json.JSONDecodeError) as err:
-                    logger.warning("Failed to get global issue ID: %s", err)
-                    return None
+            try:
+                output = self._run_glab_command(["api", api_endpoint])
+                if output:
+                    data = json.loads(output)
+                    return str(data.get("id"))
+            except (PlatformError, json.JSONDecodeError) as err:
+                logger.warning("Failed to get global issue ID: %s", err)
+                return None
 
         return None
 
@@ -767,8 +702,8 @@ class EpicIssueCreator:
         Returns:
             Project path (namespace/project) or None if unable to determine.
         """
-        # Import here to avoid circular dependency
-        from ..utils.git_helpers import get_current_repo_path  # pylint: disable=import-outside-toplevel
+        # Import here to avoid circular dependency with git_helpers module
+        from ..utils.git_helpers import get_current_repo_path  # pylint: disable=import-outside-toplevel  # fmt: skip
 
         project_id = get_current_repo_path()
         if project_id:
