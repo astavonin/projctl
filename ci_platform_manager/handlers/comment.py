@@ -39,15 +39,19 @@ def _normalize_location(loc: str) -> str:
 
 
 def _process_finding_locations(finding: Dict[str, Any]) -> list:
-    """Process a finding's locations and group by file.
+    """Process a finding's locations into a single (finding, location) pair.
+
+    One comment is posted per finding regardless of how many locations are
+    listed. The comment is anchored at the first location; remaining locations
+    are stored in ``_extra_locations`` and rendered in the comment body.
 
     Args:
         finding: Finding dictionary from review YAML
 
     Returns:
-        List of tuples (modified_finding, [location]) for posting
+        Single-element list containing a (modified_finding, [primary_location])
+        tuple, or an empty list if the finding has no location.
     """
-    # Get locations (could be single 'location' or multiple 'locations')
     locations = finding.get("locations", [])
     if "location" in finding:
         locations = [finding["location"]]
@@ -55,30 +59,14 @@ def _process_finding_locations(finding: Dict[str, Any]) -> list:
     if not locations:
         return []
 
-    # Normalize locations
-    normalized_locations = [_normalize_location(loc) for loc in locations]
+    normalized = [_normalize_location(loc) for loc in locations]
+    primary = normalized[0]
 
-    # Group locations by file to avoid duplicates
-    files_seen = {}
-    inline_findings = []
+    modified_finding = finding.copy()
+    if len(normalized) > 1:
+        modified_finding["_extra_locations"] = normalized[1:]
 
-    for loc in normalized_locations:
-        file_path = loc.rsplit(":", 1)[0]
-        if file_path not in files_seen:
-            files_seen[file_path] = loc
-            # Create a modified finding with all locations in this file
-            file_locations = [
-                location
-                for location in normalized_locations
-                if location.startswith(file_path + ":")
-            ]
-            modified_finding = finding.copy()
-            if len(file_locations) > 1:
-                # Add note about other lines in the same file
-                modified_finding["_extra_locations"] = file_locations[1:]
-            inline_findings.append((modified_finding, [files_seen[file_path]]))
-
-    return inline_findings
+    return [(modified_finding, [primary])]
 
 
 def _load_review_data(review_file: str) -> tuple:
@@ -220,6 +208,39 @@ def cmd_comment(args) -> int:
     return 1
 
 
+def _post_note_fallback(mr_number: int, location: str, comment_body: str) -> bool:
+    """Post a general MR note when inline comment posting fails.
+
+    Used when GitLab rejects an inline comment (e.g. the line is not in the
+    diff). Prepends the original location so context is preserved.
+
+    Args:
+        mr_number: The MR iid.
+        location: Original file:line location string.
+        comment_body: Formatted comment body to post as a note.
+
+    Returns:
+        True if the note was posted successfully, False otherwise.
+    """
+    note_body = f"**Location:** `{location}`\n\n{comment_body}"
+    cmd = [
+        "glab",
+        "api",
+        f"projects/:id/merge_requests/{mr_number}/notes",
+        "--method",
+        "POST",
+        "-f",
+        f"body={note_body}",
+    ]
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        logger.info("✓ Posted note (fallback) for %s", location)
+        return True
+    except subprocess.CalledProcessError as err:
+        logger.error("Failed to post note fallback on %s: %s", location, err.stderr)
+        return False
+
+
 def post_inline_comment(
     mr_number: int,
     finding: Dict[str, Any],
@@ -262,10 +283,9 @@ def post_inline_comment(
 
         comment_body = f"**{severity}: {title}**\n\n{description}"
 
-        # Add other affected lines in the same file
         if extra_locations:
-            lines = [loc.split(":")[-1] for loc in extra_locations]
-            comment_body += f"\n\n**Also affects lines:** {', '.join(lines)}"
+            locs_str = ", ".join(f"`{loc}`" for loc in extra_locations)
+            comment_body += f"\n\n**Also affects:** {locs_str}"
 
         if fix:
             comment_body += f"\n\n**Fix:**\n```\n{fix}\n```"
@@ -305,19 +325,28 @@ def post_inline_comment(
         ]
 
         logger.debug("Posting comment to %s:%d", file_path, line_num)
-        subprocess.run(cmd, input=json.dumps(payload), capture_output=True, text=True, check=True)
-
-        logger.info("✓ Posted comment on %s:%d", file_path, line_num)
-        return True
+        try:
+            subprocess.run(
+                cmd, input=json.dumps(payload), capture_output=True, text=True, check=True
+            )
+            logger.info("✓ Posted inline comment on %s:%d", file_path, line_num)
+            return True
+        except subprocess.CalledProcessError as err:
+            # GitLab returns 500 when the line is not part of the diff.
+            # Fall back to a general note so the finding is never silently dropped.
+            logger.warning(
+                "Inline comment failed for %s:%d (%s) — falling back to note",
+                file_path,
+                line_num,
+                err.stderr.strip(),
+            )
+            return _post_note_fallback(mr_number, location, comment_body)
 
     except (json.JSONDecodeError, KeyError, TypeError) as err:
         logger.error("Error posting comment on %s: %s", location, err)
         return False
     except ValueError as err:
         logger.error("Invalid line number in location: %s: %s", location, err)
-        return False
-    except subprocess.CalledProcessError as err:
-        logger.error("Failed to post comment on %s: %s", location, err.stderr)
         return False
 
 

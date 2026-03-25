@@ -37,6 +37,8 @@ install: venv
 	@echo "Installing package with dev dependencies..."
 	$(PIP) install --upgrade pip setuptools wheel
 	$(PIP) install -e ".[dev]"
+	@echo "Installing CLI globally via pipx (editable)..."
+	pipx install -e . --force
 	@echo ""
 	@echo "✓ Installation complete!"
 	@echo "To activate the virtual environment, run:"
