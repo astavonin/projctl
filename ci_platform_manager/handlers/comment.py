@@ -5,7 +5,7 @@ import logging
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 try:
     import yaml
@@ -117,6 +117,35 @@ def _fetch_mr_position(mr_number: int) -> "CommentPosition | None":
     return CommentPosition(base_sha=base_sha, head_sha=head_sha)
 
 
+def _fetch_existing_note_bodies(mr_number: int) -> set:
+    """Fetch bodies of all existing notes on an MR for deduplication.
+
+    Returns an empty set on any error so posting proceeds normally.
+
+    Args:
+        mr_number: The MR iid.
+
+    Returns:
+        Set of note body strings already posted to the MR.
+    """
+    cmd = [
+        "glab",
+        "api",
+        f"projects/:id/merge_requests/{mr_number}/notes",
+        "--method",
+        "GET",
+        "-F",
+        "per_page=100",
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        notes = json.loads(result.stdout)
+        return {note["body"] for note in notes if isinstance(note, dict) and "body" in note}
+    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as err:
+        logger.warning("Could not fetch existing notes for deduplication: %s", err)
+        return set()
+
+
 def _post_inline_findings(
     mr_number: int,
     findings: list,
@@ -132,9 +161,10 @@ def _post_inline_findings(
         dry_run: If True, only print what would be done.
 
     Returns:
-        Tuple of (posted_count, failed_count).
+        Tuple of (posted_count, skipped_count, failed_count).
     """
-    posted_count, failed_count = 0, 0
+    existing_bodies = _fetch_existing_note_bodies(mr_number)
+    posted_count, skipped_count, failed_count = 0, 0, 0
     for finding in findings:
         finding_results = _process_finding_locations(finding)
         if not finding_results:
@@ -142,18 +172,21 @@ def _post_inline_findings(
             continue
         for located_finding, locations in finding_results:
             for location in locations:
-                success = post_inline_comment(
+                result = post_inline_comment(
                     mr_number=mr_number,
                     finding=located_finding,
                     location=location,
                     position=position,
                     dry_run=dry_run,
+                    existing_bodies=existing_bodies,
                 )
-                if success:
+                if result is None:
+                    skipped_count += 1
+                elif result:
                     posted_count += 1
                 else:
                     failed_count += 1
-    return posted_count, failed_count
+    return posted_count, skipped_count, failed_count
 
 
 def cmd_comment(args) -> int:
@@ -181,20 +214,21 @@ def cmd_comment(args) -> int:
             return post_general_comment(mr_number, review_data, args.dry_run)
 
         findings = review_data.get("findings", [])
-        posted_count, failed_count = _post_inline_findings(
+        posted_count, skipped_count, failed_count = _post_inline_findings(
             mr_number, findings, position, args.dry_run
         )
 
         if args.dry_run:
             print(
                 f"\n[DRY RUN] Would post {posted_count} inline comments "
-                f"({failed_count} failed) to MR !{mr_number}"
+                f"({skipped_count} already posted, {failed_count} failed) to MR !{mr_number}"
             )
         else:
             logger.info(
-                "✓ Posted %d inline comments to MR !%s (%d failed)",
+                "✓ Posted %d inline comments to MR !%s (%d skipped, %d failed)",
                 posted_count,
                 mr_number,
+                skipped_count,
                 failed_count,
             )
 
@@ -208,7 +242,9 @@ def cmd_comment(args) -> int:
     return 1
 
 
-def _post_note_fallback(mr_number: int, location: str, comment_body: str) -> bool:
+def _post_note_fallback(
+    mr_number: int, location: str, comment_body: str, existing_bodies: set
+) -> Optional[bool]:
     """Post a general MR note when inline comment posting fails.
 
     Used when GitLab rejects an inline comment (e.g. the line is not in the
@@ -218,10 +254,18 @@ def _post_note_fallback(mr_number: int, location: str, comment_body: str) -> boo
         mr_number: The MR iid.
         location: Original file:line location string.
         comment_body: Formatted comment body to post as a note.
+        existing_bodies: Set of note bodies already on the MR; used to skip
+            duplicates when the comment was previously posted as a fallback note.
 
     Returns:
-        True if the note was posted successfully, False otherwise.
+        True if the note was posted successfully (or already existed), False otherwise.
     """
+    # A previously posted fallback note embeds comment_body after the location
+    # prefix, so checking for comment_body as a substring catches it.
+    if any(comment_body in existing for existing in existing_bodies):
+        logger.info("Skipping already-posted note for %s", location)
+        return None  # None signals "skipped", distinct from True (posted) / False (failed)
+
     note_body = f"**Location:** `{location}`\n\n{comment_body}"
     cmd = [
         "glab",
@@ -241,13 +285,16 @@ def _post_note_fallback(mr_number: int, location: str, comment_body: str) -> boo
         return False
 
 
-def post_inline_comment(
+def post_inline_comment(  # pylint: disable=too-many-return-statements
+    # Each return guards a distinct failure/skip path; collapsing them would obscure intent.
     mr_number: int,
     finding: Dict[str, Any],
     location: str,
     position: CommentPosition,
     dry_run: bool = False,
-) -> bool:
+    *,
+    existing_bodies: "set | None" = None,
+) -> Optional[bool]:
     """Post an inline comment on a specific line in the MR diff.
 
     Args:
@@ -256,9 +303,11 @@ def post_inline_comment(
         location: File location string (e.g., "path/to/file.cc:123")
         position: Comment position data (base and head SHAs)
         dry_run: If True, only print what would be done
+        existing_bodies: Set of note bodies already on the MR; used to skip
+            duplicates when the command is re-run after a partial failure.
 
     Returns:
-        True if comment posted successfully, False otherwise
+        True if comment posted successfully (or already existed), False otherwise
     """
     try:
         # Parse location (format: "path/to/file.cc:123" or "path/to/file.cc:123-145")
@@ -289,6 +338,20 @@ def post_inline_comment(
 
         if fix:
             comment_body += f"\n\n**Fix:**\n```\n{fix}\n```"
+
+        # Skip if this comment body was already posted (as inline or fallback note).
+        # Fallback notes embed comment_body after a location prefix, so substring
+        # matching catches both forms.
+        already_posted = existing_bodies and any(
+            comment_body in existing for existing in existing_bodies
+        )
+
+        if already_posted:
+            if dry_run:
+                print(f"\n[DRY RUN] Already posted, skipping {file_path}:{line_num}")
+            else:
+                logger.info("Skipping already-posted comment on %s:%d", file_path, line_num)
+            return None  # None signals "skipped", distinct from True (posted) / False (failed)
 
         if dry_run:
             print(f"\n[DRY RUN] Would post comment on {file_path}:{line_num}")
@@ -340,7 +403,7 @@ def post_inline_comment(
                 line_num,
                 err.stderr.strip(),
             )
-            return _post_note_fallback(mr_number, location, comment_body)
+            return _post_note_fallback(mr_number, location, comment_body, existing_bodies or set())
 
     except (json.JSONDecodeError, KeyError, TypeError) as err:
         logger.error("Error posting comment on %s: %s", location, err)
