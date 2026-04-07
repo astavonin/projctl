@@ -645,7 +645,11 @@ class EpicIssueCreator:
             if self.issue_id_mapping:
                 self._create_dependency_links(issues)
         elif has_epic and not has_issues:
-            raise ValueError("YAML contains 'epic' but no 'issues' section with at least one issue")
+            # Epic-only creation (no issues needed yet)
+            epic_config = config["epic"]
+            epic_iid = self.create_epic(epic_config)
+            if not self.dry_run:
+                print(f"Created epic &{epic_iid}: {epic_config.get('title', '')}")
         elif has_issues and not has_epic:
             raise ValueError("YAML contains 'issues' but no 'epic' section")
 

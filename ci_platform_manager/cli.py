@@ -22,6 +22,7 @@ from .handlers.pipeline_handler import PipelineHandler
 from .handlers.search import SearchHandler
 from .handlers.sync import PlanningSyncHandler
 from .handlers.updater import TicketUpdater
+from .handlers.wiki import WikiHandler
 
 logger = logging.getLogger(__name__)
 
@@ -621,6 +622,99 @@ Examples:
     p.add_argument("--dry-run", action="store_true", help="Preview changes without executing")
 
 
+def _add_wiki_subparser(subparsers: argparse._SubParsersAction) -> None:
+    """Register the 'wiki' subcommand with list/load/create/update sub-subcommands."""
+    p = subparsers.add_parser(
+        "wiki",
+        help="Manage GitLab project wiki pages",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  wiki list
+  wiki load my-page-slug
+  wiki create "My Page" --content page.md
+  wiki update my-page-slug --content updated.md --dry-run
+        """,
+    )
+    sub = p.add_subparsers(dest="wiki_command", required=True)
+
+    # list: no positional args
+    sub.add_parser("list", help="List all wiki pages (slug + title)")
+
+    # load: positional slug
+    load_p = sub.add_parser("load", help="Load and print a wiki page by slug")
+    load_p.add_argument("slug", type=str, help="Wiki page slug")
+
+    # create: positional title, required --content, optional --dry-run
+    create_p = sub.add_parser("create", help="Create a new wiki page")
+    create_p.add_argument("title", type=str, help="Page title")
+    create_p.add_argument(
+        "--content",
+        metavar="FILE",
+        required=True,
+        help="Path to Markdown file with page content",
+    )
+    create_p.add_argument("--dry-run", action="store_true", help="Preview without making API calls")
+
+    # update: positional slug, required --content, optional --dry-run
+    update_p = sub.add_parser("update", help="Update an existing wiki page")
+    update_p.add_argument("slug", type=str, help="Wiki page slug to update")
+    update_p.add_argument(
+        "--content",
+        metavar="FILE",
+        required=True,
+        help="Path to Markdown file with new page content",
+    )
+    update_p.add_argument("--dry-run", action="store_true", help="Preview without making API calls")
+
+
+def cmd_wiki(args) -> int:
+    """Handle the 'wiki' subcommand.
+
+    Args:
+        args: Parsed command-line arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for error).
+    """
+    try:
+        handler = WikiHandler()
+
+        if args.wiki_command == "list":
+            handler.list_pages()
+        elif args.wiki_command == "load":
+            handler.load_page(args.slug)
+        elif args.wiki_command == "create":
+            content_path = Path(args.content)
+            if not content_path.exists():
+                logger.error("Content file not found: %s", content_path)
+                return 1
+            content = content_path.read_text(encoding="utf-8")
+            handler.create_page(title=args.title, content=content, dry_run=args.dry_run)
+        elif args.wiki_command == "update":
+            content_path = Path(args.content)
+            if not content_path.exists():
+                logger.error("Content file not found: %s", content_path)
+                return 1
+            content = content_path.read_text(encoding="utf-8")
+            handler.update_page(
+                slug=args.slug,
+                content=content,
+                dry_run=args.dry_run,
+            )
+        else:
+            logger.error("Unknown wiki command: %s", args.wiki_command)
+            return 1
+
+        return 0
+    except FileNotFoundError as err:
+        logger.error(str(err))
+        return 1
+    except (PlatformError, ValueError) as err:
+        logger.error("Error: %s", err)
+        return 1
+
+
 def _add_pipeline_debug_subparser(subparsers: argparse._SubParsersAction) -> None:
     """Register the 'pipeline-debug' subcommand."""
     p = subparsers.add_parser(
@@ -675,6 +769,7 @@ Documentation:
     _add_sync_subparser(subparsers)
     _add_update_subparser(subparsers)
     _add_pipeline_debug_subparser(subparsers)
+    _add_wiki_subparser(subparsers)
 
     args = parser.parse_args()
 
@@ -694,6 +789,7 @@ Documentation:
         "sync": cmd_sync,
         "update": cmd_update,
         "pipeline-debug": cmd_pipeline_debug,
+        "wiki": cmd_wiki,
     }
 
     try:

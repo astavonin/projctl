@@ -389,20 +389,57 @@ class TestProcessYamlFileMilestone:
         with pytest.raises(ValueError, match="title"):
             creator.process_yaml_file(yaml_path)
 
-    def test_epic_without_issues_raises_value_error(
-        self, new_config_path: Path, temp_dir: Path
+    def test_epic_only_dry_run_prints_summary(
+        self, new_config_path: Path, temp_dir: Path, capsys
     ) -> None:
-        """YAML with epic but no issues raises ValueError."""
+        """Epic-only YAML creates epic and prints summary in dry-run mode."""
         config = Config(new_config_path)
-        creator = EpicIssueCreator(config)
+        creator = EpicIssueCreator(config, dry_run=True)
 
         yaml_path = self._write_yaml(
-            temp_dir / "epic_no_issues.yaml",
-            {"epic": {"title": "Lonely Epic"}},
+            temp_dir / "epic_only.yaml",
+            {"epic": {"title": "Standalone Epic"}},
         )
 
-        with pytest.raises(ValueError, match="'epic' but no 'issues'"):
-            creator.process_yaml_file(yaml_path)
+        creator.process_yaml_file(yaml_path)
+
+        # dry-run suppresses the print (dry_run guard), no issues created
+        assert creator.created_issues == []
+
+    @patch("subprocess.run")
+    def test_epic_only_new_epic_creates_via_api(
+        self, mock_run: Mock, new_config_path: Path, temp_dir: Path, capsys
+    ) -> None:
+        """Epic-only YAML with a new epic title calls the API and prints result."""
+        mock_run.return_value = Mock(stdout='{"id": 100, "iid": 7}', stderr="", returncode=0)
+        config = Config(new_config_path)
+        creator = EpicIssueCreator(config, dry_run=False)
+
+        yaml_path = self._write_yaml(
+            temp_dir / "epic_new.yaml",
+            {"epic": {"title": "Brand New Epic"}},
+        )
+
+        creator.process_yaml_file(yaml_path)
+
+        mock_run.assert_called_once()
+        captured = capsys.readouterr()
+        assert "7" in captured.out
+        assert "Brand New Epic" in captured.out
+
+    def test_epic_only_existing_id_dry_run(self, new_config_path: Path, temp_dir: Path) -> None:
+        """Epic-only YAML with an existing epic id succeeds without any API call."""
+        config = Config(new_config_path)
+        creator = EpicIssueCreator(config, dry_run=True)
+
+        yaml_path = self._write_yaml(
+            temp_dir / "epic_existing.yaml",
+            {"epic": {"id": 42}},
+        )
+
+        creator.process_yaml_file(yaml_path)
+
+        assert creator.created_issues == []
 
     def test_issues_without_epic_raises_value_error(
         self, new_config_path: Path, temp_dir: Path

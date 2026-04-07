@@ -57,6 +57,35 @@ def parse_issue_url(issue_ref: str) -> Tuple[Optional[str], Optional[str]]:
     return (None, None)
 
 
+def get_gitlab_base_url() -> str:
+    """Derive the GitLab base URL from the git remote origin.
+
+    Returns:
+        Base URL such as ``https://gitlab.cartrack.com``, or empty string
+        if it cannot be determined.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=Path.cwd(),
+        )
+        remote = result.stdout.strip()
+        if remote.startswith("http"):
+            # https://gitlab.cartrack.com/group/project.git
+            parts = remote.split("/")
+            return f"{parts[0]}//{parts[2]}"
+        if "@" in remote:
+            # git@gitlab.cartrack.com:group/project.git
+            host = remote.split("@")[1].split(":")[0]
+            return f"https://{host}"
+    except (subprocess.CalledProcessError, IndexError):
+        pass
+    return ""
+
+
 def get_current_repo_path() -> Optional[str]:
     """Get current repository full path from git remote.
 
