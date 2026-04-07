@@ -271,3 +271,157 @@ class TestDryRun:
         creator.create_issue(issue_config, epic_id=None)
 
         mock_run.assert_not_called()
+
+
+class TestProcessYamlFileMilestone:
+    """Test process_yaml_file with milestone section combinations."""
+
+    def _write_yaml(self, path: Path, data: Dict[str, Any]) -> Path:
+        """Write a YAML file to the given path and return it."""
+        with open(path, "w", encoding="utf-8") as fh:
+            yaml.dump(data, fh)
+        return path
+
+    def test_milestone_only_dry_run(self, new_config_path: Path, temp_dir: Path, capsys) -> None:
+        """Milestone-only YAML creates milestone and prints summary in dry-run mode."""
+        config = Config(new_config_path)
+        creator = EpicIssueCreator(config, dry_run=True)
+
+        yaml_path = self._write_yaml(
+            temp_dir / "milestone_only.yaml",
+            {
+                "milestone": {
+                    "title": "ADAS Model Integration",
+                    "description": "Integration of supercombo model",
+                    "due_date": "2026-12-31",
+                }
+            },
+        )
+
+        creator.process_yaml_file(yaml_path)
+
+        captured = capsys.readouterr()
+        assert "ADAS Model Integration" in captured.out
+        assert "DRY_RUN" in captured.out
+        # No issues should have been created
+        assert creator.created_issues == []
+
+    def test_milestone_with_epic_and_issues_dry_run(
+        self, new_config_path: Path, temp_dir: Path, capsys
+    ) -> None:
+        """Milestone + epic + issues YAML processes all three sections in dry-run mode."""
+        config = Config(new_config_path)
+        creator = EpicIssueCreator(config, dry_run=True)
+
+        yaml_path = self._write_yaml(
+            temp_dir / "full.yaml",
+            {
+                "milestone": {
+                    "title": "Sprint 1",
+                    "due_date": "2026-06-30",
+                },
+                "epic": {"title": "My Epic"},
+                "issues": [
+                    {
+                        "title": "First Issue",
+                        "description": ("# Description\n\nDesc\n\n# Acceptance Criteria\n\n- AC1"),
+                    }
+                ],
+            },
+        )
+
+        creator.process_yaml_file(yaml_path)
+
+        captured = capsys.readouterr()
+        assert "Sprint 1" in captured.out
+        # One issue created
+        assert len(creator.created_issues) == 1
+
+    def test_epic_and_issues_without_milestone_unchanged(
+        self, new_config_path: Path, sample_issue_yaml_path: Path
+    ) -> None:
+        """Existing epic+issues YAML without milestone continues to work."""
+        config = Config(new_config_path)
+        creator = EpicIssueCreator(config, dry_run=True)
+
+        creator.process_yaml_file(sample_issue_yaml_path)
+
+        assert len(creator.created_issues) == 2
+
+    def test_empty_yaml_raises_value_error(self, new_config_path: Path, temp_dir: Path) -> None:
+        """Empty YAML file raises ValueError."""
+        config = Config(new_config_path)
+        creator = EpicIssueCreator(config)
+
+        empty_yaml = temp_dir / "empty.yaml"
+        empty_yaml.write_text("")
+
+        with pytest.raises(ValueError, match="empty"):
+            creator.process_yaml_file(empty_yaml)
+
+    def test_yaml_with_no_known_sections_raises_value_error(
+        self, new_config_path: Path, temp_dir: Path
+    ) -> None:
+        """YAML with none of the supported keys raises ValueError."""
+        config = Config(new_config_path)
+        creator = EpicIssueCreator(config)
+
+        yaml_path = self._write_yaml(
+            temp_dir / "unknown.yaml",
+            {"unknown_key": "value"},
+        )
+
+        with pytest.raises(ValueError, match="at least one of"):
+            creator.process_yaml_file(yaml_path)
+
+    def test_milestone_missing_title_raises_value_error(
+        self, new_config_path: Path, temp_dir: Path
+    ) -> None:
+        """Milestone section without title raises ValueError."""
+        config = Config(new_config_path)
+        creator = EpicIssueCreator(config)
+
+        yaml_path = self._write_yaml(
+            temp_dir / "no_title.yaml",
+            {"milestone": {"description": "No title here"}},
+        )
+
+        with pytest.raises(ValueError, match="title"):
+            creator.process_yaml_file(yaml_path)
+
+    def test_epic_without_issues_raises_value_error(
+        self, new_config_path: Path, temp_dir: Path
+    ) -> None:
+        """YAML with epic but no issues raises ValueError."""
+        config = Config(new_config_path)
+        creator = EpicIssueCreator(config)
+
+        yaml_path = self._write_yaml(
+            temp_dir / "epic_no_issues.yaml",
+            {"epic": {"title": "Lonely Epic"}},
+        )
+
+        with pytest.raises(ValueError, match="'epic' but no 'issues'"):
+            creator.process_yaml_file(yaml_path)
+
+    def test_issues_without_epic_raises_value_error(
+        self, new_config_path: Path, temp_dir: Path
+    ) -> None:
+        """YAML with issues but no epic raises ValueError."""
+        config = Config(new_config_path)
+        creator = EpicIssueCreator(config)
+
+        yaml_path = self._write_yaml(
+            temp_dir / "issues_no_epic.yaml",
+            {
+                "issues": [
+                    {
+                        "title": "Orphan Issue",
+                        "description": ("# Description\n\nDesc\n\n# Acceptance Criteria\n\n- AC1"),
+                    }
+                ]
+            },
+        )
+
+        with pytest.raises(ValueError, match="'issues' but no 'epic'"):
+            creator.process_yaml_file(yaml_path)

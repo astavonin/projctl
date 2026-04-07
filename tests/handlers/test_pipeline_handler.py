@@ -124,9 +124,7 @@ class TestGetCurrentPipeline:
         "ci_platform_manager.handlers.pipeline_handler.PipelineHandler.get_project_from_remote",
         return_value=None,
     )
-    def test_get_current_pipeline_no_config(
-        self, mock_remote: Mock, tmp_path: Path
-    ) -> None:
+    def test_get_current_pipeline_no_config(self, mock_remote: Mock, tmp_path: Path) -> None:
         """Missing config and no git remote raises PlatformError."""
         # Create minimal config without default_group
         config_file = tmp_path / "config.yaml"

@@ -4,12 +4,14 @@
 # pylint: disable=protected-access
 
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
 import yaml
 
+from ci_platform_manager.cli import main as cli_main
 from ci_platform_manager.config import Config
 from ci_platform_manager.exceptions import PlatformError
 from ci_platform_manager.handlers.updater import TicketUpdater
@@ -399,7 +401,9 @@ class TestUpdateEpic:
     @patch("subprocess.run")
     def test_update_epic_state_event(self, mock_run: Mock, new_config_path: Path) -> None:
         """update_epic passes state_event correctly."""
-        mock_run.return_value = Mock(stdout='{"iid": 37, "title": "T"}', stderr="", returncode=0)
+        title_response = Mock(stdout='{"iid": 37, "title": "T"}', stderr="", returncode=0)
+        put_response = Mock(stdout='{"iid": 37, "title": "T"}', stderr="", returncode=0)
+        mock_run.side_effect = [title_response, put_response]
         config = Config(new_config_path)
         updater = TicketUpdater(config)
 
@@ -412,21 +416,26 @@ class TestUpdateEpic:
     @patch("subprocess.run")
     def test_update_epic_label_merge(self, mock_run: Mock, new_config_path: Path) -> None:
         """update_epic fetches current labels (as dicts) and merges correctly."""
+        title_response = Mock(
+            stdout='{"iid": 37, "title": "T"}',
+            stderr="",
+            returncode=0,
+        )
         get_response = Mock(
             stdout='{"iid": 37, "title": "T", "labels": [{"name": "epic"}, {"name": "old"}]}',
             stderr="",
             returncode=0,
         )
         put_response = Mock(stdout='{"iid": 37, "title": "T"}', stderr="", returncode=0)
-        mock_run.side_effect = [get_response, put_response]
+        mock_run.side_effect = [title_response, get_response, put_response]
 
         config = Config(new_config_path)
         updater = TicketUpdater(config)
 
         updater.update_epic("37", labels_add=["new"], labels_remove=["old"])
 
-        assert mock_run.call_count == 2
-        put_args = mock_run.call_args_list[1][0][0]
+        assert mock_run.call_count == 3
+        put_args = mock_run.call_args_list[2][0][0]
         fields = [put_args[i + 1] for i, a in enumerate(put_args) if a == "-f"]
         label_fields = [f for f in fields if f.startswith("labels=")]
         assert label_fields
@@ -483,6 +492,87 @@ class TestUpdateEpic:
 
         with pytest.raises(ValueError, match="Group path is required"):
             updater.update_epic("37", title="Should fail")
+
+    @patch("subprocess.run")
+    def test_update_epic_milestone_resolves_group_id(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """update_epic resolves milestone via group milestones endpoint and sends milestone_id."""
+        # First call: GET epic (title fetch); second call: GET group milestones; third call: PUT epic
+        title_response = Mock(stdout='{"iid": 37, "title": "T"}', stderr="", returncode=0)
+        milestones_response = Mock(
+            stdout='[{"id": 77, "iid": 24, "title": "Sprint 1"}]', stderr="", returncode=0
+        )
+        put_response = Mock(stdout='{"iid": 37, "title": "T"}', stderr="", returncode=0)
+        mock_run.side_effect = [title_response, milestones_response, put_response]
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        updater.update_epic("37", milestone="Sprint 1")
+
+        assert mock_run.call_count == 3
+        # Second call must hit the group milestones endpoint, not projects.
+        get_args = mock_run.call_args_list[1][0][0]
+        assert "groups/" in " ".join(get_args)
+        assert "milestones" in " ".join(get_args)
+        assert "projects/" not in " ".join(get_args)
+        # PUT call must carry the numeric database ID.
+        put_args = mock_run.call_args_list[2][0][0]
+        fields = [put_args[i + 1] for i, a in enumerate(put_args) if a == "-f"]
+        assert any("milestone_id=77" in f for f in fields)
+
+    @patch("subprocess.run")
+    def test_update_epic_milestone_resolves_by_iid(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """update_epic resolves milestone when referenced by iid string."""
+        title_response = Mock(stdout='{"iid": 37, "title": "T"}', stderr="", returncode=0)
+        milestones_response = Mock(
+            stdout='[{"id": 88, "iid": 5, "title": "v3.0"}]', stderr="", returncode=0
+        )
+        put_response = Mock(stdout='{"iid": 37, "title": "T"}', stderr="", returncode=0)
+        mock_run.side_effect = [title_response, milestones_response, put_response]
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        updater.update_epic("37", milestone="5")
+
+        put_args = mock_run.call_args_list[2][0][0]
+        fields = [put_args[i + 1] for i, a in enumerate(put_args) if a == "-f"]
+        assert any("milestone_id=88" in f for f in fields)
+
+    @patch("subprocess.run")
+    def test_update_epic_milestone_not_found_raises(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """ValueError is raised when the specified milestone does not exist in the group."""
+        title_response = Mock(stdout='{"iid": 37, "title": "T"}', stderr="", returncode=0)
+        milestones_response = Mock(stdout="[]", stderr="", returncode=0)
+        mock_run.side_effect = [title_response, milestones_response]
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        with pytest.raises(ValueError, match="Group milestone not found"):
+            updater.update_epic("37", milestone="nonexistent")
+
+    @patch("subprocess.run")
+    def test_update_epic_milestone_dry_run(
+        self, mock_run: Mock, new_config_path: Path, capsys
+    ) -> None:
+        """Dry run with milestone shows intent and makes no API call."""
+        config = Config(new_config_path)
+        updater = TicketUpdater(config, dry_run=True)
+
+        updater.update_epic("37", milestone="Sprint 1")
+
+        mock_run.assert_not_called()
+        captured = capsys.readouterr()
+        assert "DRY RUN" in captured.out
+        assert "milestone_id" in captured.out
+        assert "Sprint 1" in captured.out
 
 
 # ---------------------------------------------------------------------------
@@ -701,6 +791,266 @@ class TestResolveMilestoneId:
 # ---------------------------------------------------------------------------
 # update_issue — additional field coverage
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# _resolve_epic_global_id (unit)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveEpicGlobalId:
+    """Unit tests for TicketUpdater._resolve_epic_global_id."""
+
+    @patch("subprocess.run")
+    def test_resolve_by_ampersand_ref(self, mock_run: Mock, new_config_path: Path) -> None:
+        """Returns (global_id, iid) for a plain &number epic reference."""
+        mock_run.return_value = Mock(stdout='{"id": 999, "iid": 47}', stderr="", returncode=0)
+        updater = TicketUpdater(Config(new_config_path))
+
+        global_id, iid = updater._resolve_epic_global_id("&47")
+
+        assert global_id == "999"
+        assert iid == "47"
+
+    @patch("subprocess.run")
+    def test_resolve_uses_default_group(self, mock_run: Mock, new_config_path: Path) -> None:
+        """Endpoint uses the config default_group when ref has no group path."""
+        mock_run.return_value = Mock(stdout='{"id": 999, "iid": 47}', stderr="", returncode=0)
+        updater = TicketUpdater(Config(new_config_path))
+        updater._resolve_epic_global_id("47")
+
+        args = mock_run.call_args[0][0]
+        # config has default_group = 'test/group'
+        assert "test" in " ".join(args) or "group" in " ".join(args)
+        assert "epics/47" in " ".join(args)
+
+    def test_resolve_no_group_raises(self, tmp_path: Path) -> None:
+        """ValueError is raised when no group is available for epic resolution."""
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"labels": {"default": ["type::feature"]}},
+        }
+        config_path = tmp_path / "no_group.yaml"
+        with open(config_path, "w", encoding="utf-8") as fh:
+            yaml.dump(config_data, fh)
+
+        updater = TicketUpdater(Config(config_path))
+        with pytest.raises(ValueError, match="Group path is required"):
+            updater._resolve_epic_global_id("47")
+
+
+# ---------------------------------------------------------------------------
+# _assign_issue_to_epic (unit)
+# ---------------------------------------------------------------------------
+
+
+class TestAssignIssueToEpic:  # pylint: disable=too-few-public-methods
+    """Unit tests for TicketUpdater._assign_issue_to_epic."""
+
+    @patch("subprocess.run")
+    def test_assigns_issue_to_epic(self, mock_run: Mock, new_config_path: Path, capsys) -> None:
+        """Sends PUT with epic_id and prints confirmation."""
+        # Call 1: fetch epic data; Call 2: PUT issue with epic_id
+        epic_response = Mock(stdout='{"id": 999, "iid": 47}', stderr="", returncode=0)
+        put_response = Mock(stdout='{"iid": 231, "title": "T"}', stderr="", returncode=0)
+        mock_run.side_effect = [epic_response, put_response]
+
+        updater = TicketUpdater(Config(new_config_path))
+        updater._assign_issue_to_epic("231", "&47")
+
+        assert mock_run.call_count == 2
+        put_args = mock_run.call_args_list[1][0][0]
+        fields = [put_args[i + 1] for i, a in enumerate(put_args) if a == "-f"]
+        assert any("epic_id=999" in f for f in fields)
+        captured = capsys.readouterr()
+        assert "231" in captured.out
+        assert "47" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# update_issue — epic assignment
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateIssueEpic:
+    """Tests for update_issue epic assignment path."""
+
+    @patch("subprocess.run")
+    def test_update_issue_epic_only(self, mock_run: Mock, new_config_path: Path) -> None:
+        """update_issue with epic only skips PUT and calls _assign_issue_to_epic."""
+        epic_response = Mock(stdout='{"id": 999, "iid": 47}', stderr="", returncode=0)
+        put_response = Mock(stdout='{"iid": 231, "title": "T"}', stderr="", returncode=0)
+        mock_run.side_effect = [epic_response, put_response]
+
+        updater = TicketUpdater(Config(new_config_path))
+        result = updater.update_issue("231", epic="&47")
+
+        # No PUT for issue fields (only epic fetch + issue PUT with epic_id)
+        assert mock_run.call_count == 2
+        put_args = mock_run.call_args_list[1][0][0]
+        fields = [put_args[i + 1] for i, a in enumerate(put_args) if a == "-f"]
+        assert any("epic_id=999" in f for f in fields)
+        assert result == {}  # no PUT-based result when only epic is set
+
+    @patch("subprocess.run")
+    def test_update_issue_title_and_epic(self, mock_run: Mock, new_config_path: Path) -> None:
+        """update_issue with title + epic performs PUT first, then epic assignment."""
+        # Call order: PUT issue, fetch epic, PUT issue with epic_id
+        put_issue_response = Mock(stdout='{"iid": 231, "title": "New"}', stderr="", returncode=0)
+        epic_response = Mock(stdout='{"id": 999, "iid": 47}', stderr="", returncode=0)
+        epic_put_response = Mock(stdout='{"iid": 231, "title": "New"}', stderr="", returncode=0)
+        mock_run.side_effect = [put_issue_response, epic_response, epic_put_response]
+
+        updater = TicketUpdater(Config(new_config_path))
+        result = updater.update_issue("231", title="New", epic="&47")
+
+        assert mock_run.call_count == 3
+        assert result.get("iid") == 231
+
+    @patch("subprocess.run")
+    def test_update_issue_dry_run_epic(self, mock_run: Mock, new_config_path: Path, capsys) -> None:
+        """Dry run with epic prints intent for both title and epic without API calls."""
+        updater = TicketUpdater(Config(new_config_path), dry_run=True)
+
+        updater.update_issue("231", title="Preview", epic="&47")
+
+        mock_run.assert_not_called()
+        captured = capsys.readouterr()
+        assert "DRY RUN" in captured.out
+        assert "47" in captured.out
+
+    @patch("subprocess.run")
+    def test_update_issue_dry_run_epic_only(
+        self, mock_run: Mock, new_config_path: Path, capsys
+    ) -> None:
+        """Dry run with epic only (no other fields) prints epic intent without API calls."""
+        updater = TicketUpdater(Config(new_config_path), dry_run=True)
+
+        updater.update_issue("231", epic="&47")
+
+        mock_run.assert_not_called()
+        captured = capsys.readouterr()
+        assert "47" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# cmd_update — --epic CLI validation
+# ---------------------------------------------------------------------------
+
+
+class TestCmdUpdateEpicValidation:
+    """Tests for cmd_update --epic flag validation."""
+
+    def test_epic_rejected_for_mr(self, new_config_path: Path) -> None:
+        """--epic is rejected with an error when used on an MR resource."""
+        old_argv = sys.argv
+        try:
+            sys.argv = [
+                "ci-platform-manager",
+                "--config",
+                str(new_config_path),
+                "update",
+                "mr",
+                "144",
+                "--epic",
+                "&47",
+            ]
+            result = cli_main()
+        finally:
+            sys.argv = old_argv
+
+        assert result == 1
+
+    def test_epic_rejected_for_milestone(self, new_config_path: Path) -> None:
+        """--epic is rejected with an error when used on a milestone resource."""
+        old_argv = sys.argv
+        try:
+            sys.argv = [
+                "ci-platform-manager",
+                "--config",
+                str(new_config_path),
+                "update",
+                "milestone",
+                "10",
+                "--epic",
+                "&47",
+            ]
+            result = cli_main()
+        finally:
+            sys.argv = old_argv
+
+        assert result == 1
+
+    def test_epic_alone_counts_as_update_field(self, new_config_path: Path) -> None:
+        """--epic alone satisfies the 'at least one update field' requirement."""
+        old_argv = sys.argv
+        try:
+            sys.argv = [
+                "ci-platform-manager",
+                "--config",
+                str(new_config_path),
+                "update",
+                "issue",
+                "231",
+                "--epic",
+                "&47",
+            ]
+            epic_response = Mock(stdout='{"id": 999, "iid": 47}', stderr="", returncode=0)
+            put_response = Mock(stdout='{"iid": 231, "title": "T"}', stderr="", returncode=0)
+            with patch("subprocess.run", side_effect=[epic_response, put_response]):
+                result = cli_main()
+        finally:
+            sys.argv = old_argv
+
+        assert result == 0
+
+    def test_milestone_accepted_for_epic(self, new_config_path: Path) -> None:
+        """--milestone is accepted for epic resources and triggers update_epic with milestone."""
+        old_argv = sys.argv
+        try:
+            sys.argv = [
+                "ci-platform-manager",
+                "--config",
+                str(new_config_path),
+                "update",
+                "epic",
+                "43",
+                "--milestone",
+                "24",
+            ]
+            title_response = Mock(stdout='{"iid": 43, "title": "My Epic"}', stderr="", returncode=0)
+            milestones_response = Mock(
+                stdout='[{"id": 200, "iid": 24, "title": "Sprint 2"}]', stderr="", returncode=0
+            )
+            put_response = Mock(stdout='{"iid": 43, "title": "My Epic"}', stderr="", returncode=0)
+            with patch(
+                "subprocess.run", side_effect=[title_response, milestones_response, put_response]
+            ):
+                result = cli_main()
+        finally:
+            sys.argv = old_argv
+
+        assert result == 0
+
+    def test_milestone_rejected_for_milestone_resource(self, new_config_path: Path) -> None:
+        """--milestone is still rejected when the resource type is milestone."""
+        old_argv = sys.argv
+        try:
+            sys.argv = [
+                "ci-platform-manager",
+                "--config",
+                str(new_config_path),
+                "update",
+                "milestone",
+                "10",
+                "--milestone",
+                "24",
+            ]
+            result = cli_main()
+        finally:
+            sys.argv = old_argv
+
+        assert result == 1
 
 
 class TestUpdateIssueFields:

@@ -56,7 +56,6 @@ def cmd_create(args) -> int:
         return 1
 
 
-
 def _dispatch_load(loader: TicketLoader, resource_type: str, reference: str) -> None:
     """Dispatch a load + print call based on resource type.
 
@@ -290,8 +289,11 @@ def cmd_update(args) -> int:
         if resource_type in ("epic", "milestone") and args.assignee:
             logger.error("--assignee is not valid for %s resources", resource_type)
             return 1
-        if resource_type in ("epic", "milestone") and args.milestone:
-            logger.error("--milestone is not valid for %s resources", resource_type)
+        if resource_type == "milestone" and args.milestone:
+            logger.error("--milestone is not valid for milestone resources")
+            return 1
+        if resource_type != "issue" and args.epic:
+            logger.error("--epic is only valid for issue resources")
             return 1
 
         # --- M3: Require at least one field to update ---
@@ -305,6 +307,7 @@ def cmd_update(args) -> int:
                     args.assignee,
                     args.milestone,
                     args.state,
+                    args.epic,
                 ]
             )
         elif resource_type == "mr":
@@ -329,6 +332,7 @@ def cmd_update(args) -> int:
                     args.add_label,
                     args.remove_label,
                     args.state,
+                    args.milestone,
                 ]
             )
         else:  # milestone
@@ -356,6 +360,7 @@ def cmd_update(args) -> int:
                 assignee=args.assignee,
                 milestone=args.milestone,
                 state_event=args.state,
+                epic=args.epic,
             )
         elif resource_type == "mr":
             updater.update_mr(
@@ -380,6 +385,7 @@ def cmd_update(args) -> int:
                 labels_add=args.add_label,
                 labels_remove=args.remove_label,
                 state_event=args.state,
+                milestone=args.milestone,
             )
         elif resource_type == "milestone":
             updater.update_milestone(
@@ -403,14 +409,50 @@ def cmd_update(args) -> int:
         return 1
 
 
+def cmd_create_milestone(args) -> int:
+    """Handle the 'create-milestone' subcommand.
+
+    Args:
+        args: Parsed command-line arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for error).
+    """
+    try:
+        config_path = Path(args.config) if args.config else None
+        config = Config(config_path)
+
+        creator = EpicIssueCreator(config=config, dry_run=args.dry_run)
+        result = creator.create_milestone(
+            title=args.title,
+            description=args.description or "",
+            due_date=args.due_date or "",
+        )
+
+        print(f"Created milestone %{result['iid']}: {args.title}")
+        print(f"URL: {result['web_url']}")
+        return 0
+    except FileNotFoundError as err:
+        logger.error(str(err))
+        return 1
+    except (PlatformError, ValueError) as err:
+        logger.error("Error: %s", err)
+        return 1
+
+
 def _add_create_subparser(subparsers: argparse._SubParsersAction) -> None:
     """Register the 'create' subcommand."""
     p = subparsers.add_parser(
         "create",
-        help="Create issues from YAML and link to epic",
+        help="Create milestone, epic, and/or issues from YAML",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 YAML format:
+  milestone:  # optional
+    title: "My Milestone"
+    description: "..."
+    due_date: "2026-12-31"
+
   epic:
     title: "My Epic Title"
     description: "Epic description"
@@ -567,7 +609,7 @@ Examples:
     )
     p.add_argument("--assignee", type=str, help="Assignee username (issue and MR only)")
     p.add_argument("--reviewer", type=str, help="Reviewer username (MR only)")
-    p.add_argument("--milestone", type=str, help="Milestone title or iid (issue and MR only)")
+    p.add_argument("--milestone", type=str, help="Milestone title or iid (issue, MR, and epic)")
     p.add_argument("--target-branch", type=str, help="Target branch (MR only)")
     p.add_argument("--due-date", type=str, metavar="YYYY-MM-DD", help="Due date (milestone only)")
     p.add_argument(
@@ -575,6 +617,7 @@ Examples:
         choices=["close", "reopen", "activate"],
         help="State event: close or reopen (issue/MR/epic); activate (milestone)",
     )
+    p.add_argument("--epic", type=str, help="Assign issue to epic (e.g. &47) — issue only")
     p.add_argument("--dry-run", action="store_true", help="Preview changes without executing")
 
 

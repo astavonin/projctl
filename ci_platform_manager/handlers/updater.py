@@ -163,7 +163,111 @@ class TicketUpdater:
                 return str(m["id"])
         raise ValueError(f"Milestone not found: {milestone_ref!r}")
 
-    def update_issue(
+    def _resolve_group_milestone_id(self, milestone_ref: str, group_path: str) -> str:
+        """Resolve a milestone title or iid string to its numeric ID via group milestones.
+
+        GitLab's PUT /groups/:id/epics/:iid endpoint requires the milestone's
+        global database ID (not the iid). Group-level milestones live at
+        GET /groups/:id/milestones, not /projects/:id/milestones.
+
+        Args:
+            milestone_ref: Milestone iid (as string) or title (e.g. "v2.0").
+            group_path: Group namespace path (e.g. "my-org/my-group").
+
+        Returns:
+            Numeric milestone ID as a string.
+
+        Raises:
+            ValueError: If no matching milestone is found.
+            PlatformError: If the API call fails.
+        """
+        encoded_group = urllib.parse.quote(group_path, safe="")
+        # pylint: disable=protected-access
+        # TicketLoader's _run_glab_command is an internal helper shared between
+        # sibling handler classes; no public API exists for command execution.
+        output = self._loader._run_glab_command(["api", f"groups/{encoded_group}/milestones"])
+        milestones = json.loads(output)
+        for m in milestones:
+            if str(m.get("iid")) == milestone_ref or m.get("title") == milestone_ref:
+                return str(m["id"])
+        raise ValueError(f"Group milestone not found: {milestone_ref!r}")
+
+    def _resolve_epic_global_id(self, epic_ref: str) -> tuple:
+        """Resolve an epic reference to its global database ID and iid.
+
+        GitLab's issue PUT endpoint accepts epic_id (the global database ID),
+        not the group-scoped iid, so we must fetch the epic first.
+
+        Args:
+            epic_ref: Epic reference (&number, URL, or plain number format).
+
+        Returns:
+            Tuple of (global_epic_id, epic_iid) as strings.
+
+        Raises:
+            PlatformError: If the API call fails.
+            ValueError: If the epic reference cannot be parsed or group is unavailable.
+        """
+        # pylint: disable=protected-access
+        # TicketLoader's reference-parsing methods are internal helpers shared
+        # between sibling handler classes; no public API exists for them.
+        parsed_group, epic_iid = self._loader._parse_epic_reference(epic_ref)
+        group_path = parsed_group or self.config.get_default_group()
+
+        if not group_path:
+            raise ValueError(
+                "Group path is required to assign issue to epic.\n"
+                "Either include the group in the epic URL or set 'default_group' in your config."
+            )
+
+        encoded_group = urllib.parse.quote(group_path, safe="")
+        # pylint: disable=protected-access
+        # TicketLoader's _run_glab_command is an internal helper shared between
+        # sibling handler classes; no public API exists for command execution.
+        epic_data = json.loads(
+            self._loader._run_glab_command(["api", f"groups/{encoded_group}/epics/{epic_iid}"])
+        )
+        return str(epic_data["id"]), epic_iid
+
+    def _assign_issue_to_epic(self, issue_ref: str, epic_ref: str) -> None:
+        """Assign an issue to a GitLab epic via the issue update API.
+
+        GitLab's issue PUT endpoint accepts epic_id (global epic database ID).
+        The POST /groups/:id/epics/:iid/issues endpoint is unavailable on some
+        GitLab configurations; using PUT /projects/:id/issues/:iid with epic_id
+        is the reliable alternative.
+
+        Args:
+            issue_ref: Issue reference (number, URL, or #number format).
+            epic_ref: Epic reference (&number, URL, or plain number format).
+
+        Raises:
+            PlatformError: If the API call fails.
+            ValueError: If either reference cannot be parsed or group is unavailable.
+        """
+        # pylint: disable=protected-access
+        # TicketLoader's reference-parsing methods are internal helpers shared
+        # between sibling handler classes; no public API exists for them.
+        project_path, iid = self._loader._parse_issue_reference(issue_ref)
+
+        if project_path:
+            encoded_project = urllib.parse.quote(project_path, safe="")
+        else:
+            encoded_project = ":fullpath"
+
+        global_epic_id, epic_iid = self._resolve_epic_global_id(epic_ref)
+
+        endpoint = f"projects/{encoded_project}/issues/{iid}"
+        # pylint: disable=protected-access
+        # TicketLoader's _run_glab_command is an internal helper shared between
+        # sibling handler classes; no public API exists for command execution.
+        self._loader._run_glab_command(self._build_put_cmd(endpoint, {"epic_id": global_epic_id}))
+        print(f"✓ Assigned issue #{iid} to epic &{epic_iid}")
+
+    def update_issue(  # pylint: disable=too-many-locals,too-many-branches
+        # Epic assignment adds a separate POST path and a local variable for the
+        # global issue ID, pushing both counts just above the default thresholds.
+        # Extracting a helper would obscure the single-method read-then-update flow.
         self,
         issue_ref: str,
         *,
@@ -174,6 +278,7 @@ class TicketUpdater:
         assignee: Optional[str] = None,
         milestone: Optional[str] = None,
         state_event: Optional[str] = None,
+        epic: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Update an existing GitLab issue.
 
@@ -186,6 +291,7 @@ class TicketUpdater:
             assignee: Assignee username to set, or None to leave unchanged.
             milestone: Milestone title or iid to set, or None to leave unchanged.
             state_event: 'close' or 'reopen', or None to leave unchanged.
+            epic: Epic reference to assign the issue to (e.g. &47), or None to skip.
 
         Returns:
             Updated issue data returned by the API.
@@ -212,34 +318,49 @@ class TicketUpdater:
             "state_event": state_event,
         }
 
+        # Determine whether there are fields to PUT (epic assignment is a
+        # separate POST and does not go through the PUT endpoint).
+        has_put_fields = any(
+            [title, description, state_event, labels_add, labels_remove, assignee, milestone]
+        )
+
         if self.dry_run:
-            # Show intent for labels without making a live API call.
-            if labels_add or labels_remove:
-                fields["labels"] = f"<add: {labels_add or []}, remove: {labels_remove or []}>"
-            if assignee is not None:
-                fields["assignee_ids"] = f"<resolve user: {assignee}>"
-            if milestone is not None:
-                fields["milestone_id"] = f"<resolve milestone: {milestone}>"
-            print(f"[DRY RUN] Would PUT {endpoint} with fields: {fields}")
+            if has_put_fields:
+                # Show intent for labels without making a live API call.
+                if labels_add or labels_remove:
+                    fields["labels"] = f"<add: {labels_add or []}, remove: {labels_remove or []}>"
+                if assignee is not None:
+                    fields["assignee_ids"] = f"<resolve user: {assignee}>"
+                if milestone is not None:
+                    fields["milestone_id"] = f"<resolve milestone: {milestone}>"
+                print(f"[DRY RUN] Would PUT {endpoint} with fields: {fields}")
+            if epic is not None:
+                print(f"[DRY RUN] Would assign issue #{iid} to epic &{epic.lstrip('&')}")
             return {}
 
-        labels_value = self._fetch_and_merge_labels(endpoint, labels_add, labels_remove)
-        if labels_value is not None:
-            fields["labels"] = labels_value
-        if assignee is not None:
-            fields["assignee_ids"] = self._resolve_user_id(assignee)
-        if milestone is not None:
-            fields["milestone_id"] = self._resolve_milestone_id(milestone, project_path)
+        result: Dict[str, Any] = {}
+        if has_put_fields:
+            labels_value = self._fetch_and_merge_labels(endpoint, labels_add, labels_remove)
+            if labels_value is not None:
+                fields["labels"] = labels_value
+            if assignee is not None:
+                fields["assignee_ids"] = self._resolve_user_id(assignee)
+            if milestone is not None:
+                fields["milestone_id"] = self._resolve_milestone_id(milestone, project_path)
 
-        # pylint: disable=protected-access
-        # TicketLoader's _run_glab_command is an internal helper shared between
-        # sibling handler classes; no public API exists for command execution.
-        output = self._loader._run_glab_command(self._build_put_cmd(endpoint, fields))
-        result: Dict[str, Any] = json.loads(output)
+            # pylint: disable=protected-access
+            # TicketLoader's _run_glab_command is an internal helper shared between
+            # sibling handler classes; no public API exists for command execution.
+            output = self._loader._run_glab_command(self._build_put_cmd(endpoint, fields))
+            result = json.loads(output)
 
-        ref_display = result.get("iid", iid)
-        result_title = result.get("title", "")
-        print(f"✓ Updated issue #{ref_display}: {result_title}")
+            ref_display = result.get("iid", iid)
+            result_title = result.get("title", "")
+            print(f"✓ Updated issue #{ref_display}: {result_title}")
+
+        if epic is not None:
+            self._assign_issue_to_epic(issue_ref, epic)
+
         return result
 
     def update_mr(  # pylint: disable=too-many-arguments,too-many-locals
@@ -338,6 +459,7 @@ class TicketUpdater:
         labels_add: Optional[List[str]] = None,
         labels_remove: Optional[List[str]] = None,
         state_event: Optional[str] = None,
+        milestone: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Update an existing GitLab epic.
 
@@ -348,6 +470,7 @@ class TicketUpdater:
             labels_add: Labels to add to the current set.
             labels_remove: Labels to remove from the current set.
             state_event: 'close' or 'reopen', or None to leave unchanged.
+            milestone: Group milestone title or iid to set, or None to leave unchanged.
 
         Returns:
             Updated epic data returned by the API.
@@ -381,8 +504,20 @@ class TicketUpdater:
             # Show intent for labels without making a live API call.
             if labels_add or labels_remove:
                 fields["labels"] = f"<add: {labels_add or []}, remove: {labels_remove or []}>"
+            if milestone is not None:
+                fields["milestone_id"] = f"<resolve group milestone: {milestone}>"
             print(f"[DRY RUN] Would PUT {endpoint} with fields: {fields}")
             return {}
+
+        # Fetch current title if not provided — GitLab rejects PUT with only milestone_id.
+        if title is None:
+            # pylint: disable=protected-access
+            # TicketLoader's _run_glab_command is an internal helper shared between
+            # sibling handler classes; no public API exists for command execution.
+            current = json.loads(self._loader._run_glab_command(["api", endpoint]))
+            fields["title"] = current.get("title", "")
+        else:
+            fields["title"] = title
 
         # Epic labels are returned as dicts with a 'name' key.
         labels_value = self._fetch_and_merge_labels(
@@ -390,6 +525,9 @@ class TicketUpdater:
         )
         if labels_value is not None:
             fields["labels"] = labels_value
+
+        if milestone is not None:
+            fields["milestone_id"] = self._resolve_group_milestone_id(milestone, group_path)
 
         # pylint: disable=protected-access
         # TicketLoader's _run_glab_command is an internal helper shared between

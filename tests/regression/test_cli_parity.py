@@ -176,7 +176,14 @@ class TestCLIOptions:
     def test_config_option_works(self, new_config_path: Path) -> None:
         """--config option should work."""
         result = subprocess.run(
-            [sys.executable, "-m", "ci_platform_manager", "--config", str(new_config_path), "--help"],
+            [
+                sys.executable,
+                "-m",
+                "ci_platform_manager",
+                "--config",
+                str(new_config_path),
+                "--help",
+            ],
             capture_output=True,
             text=True,
         )

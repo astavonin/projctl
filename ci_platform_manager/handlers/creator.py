@@ -562,15 +562,26 @@ class EpicIssueCreator:
 
         return validation_errors
 
-    def process_yaml_file(self, yaml_path: Path) -> None:
-        """Process a YAML file and create epic and issues.
+    def process_yaml_file(  # pylint: disable=too-many-branches
+        # milestone + epic + issues support adds multiple conditional paths that
+        # are inherently flat and readable; extracting helpers would obscure flow.
+        self,
+        yaml_path: Path,
+    ) -> None:
+        """Process a YAML file and create milestone, epic, and/or issues.
+
+        Supported combinations:
+        - milestone only
+        - milestone + epic + issues
+        - epic + issues (existing behaviour, unchanged)
 
         Args:
             yaml_path: Path to the YAML configuration file.
 
         Raises:
             PlatformError: If creation fails.
-            ValueError: If YAML structure is invalid.
+            ValueError: If YAML structure is invalid or contains none of the
+                        supported top-level keys.
         """
         logger.info("Loading configuration from: %s", yaml_path)
         with open(yaml_path, "r", encoding="utf-8") as yaml_file:
@@ -579,44 +590,64 @@ class EpicIssueCreator:
         if not config:
             raise ValueError("YAML file is empty")
 
-        if "epic" not in config:
-            raise ValueError("YAML must contain 'epic' section")
+        has_milestone = "milestone" in config
+        has_epic = "epic" in config
+        has_issues = "issues" in config and config["issues"]
 
-        if "issues" not in config or not config["issues"]:
-            raise ValueError("YAML must contain 'issues' section with at least one issue")
+        if not has_milestone and not has_epic and not has_issues:
+            raise ValueError(
+                "YAML must contain at least one of: 'milestone', 'epic', or 'issues' sections"
+            )
 
-        # Create or get epic
-        epic_config = config["epic"]
-        epic_id = self.create_epic(epic_config)
+        # Create milestone first when present
+        if has_milestone:
+            milestone_config = config["milestone"]
+            if "title" not in milestone_config:
+                raise ValueError("Milestone section must contain a 'title' field")
+            result = self.create_milestone(
+                title=milestone_config["title"],
+                description=milestone_config.get("description", ""),
+                due_date=milestone_config.get("due_date", ""),
+            )
+            print(f"Created milestone %{result['iid']}: {milestone_config['title']}")
+            print(f"URL: {result['web_url']}")
 
-        # Validate external dependencies upfront before creating issues
-        issues = config["issues"]
+        # Create epic + issues when both are present
+        if has_epic and has_issues:
+            # Create or get epic
+            epic_config = config["epic"]
+            epic_id = self.create_epic(epic_config)
 
-        # Extract project ID for validation (need a placeholder for dry-run)
-        if not self.dry_run:
-            # For validation, we need the project ID before creating any issues
-            # We can extract it from the repo config or use the group path
-            project_id = self._get_project_id_for_validation()
-            if project_id:
-                validation_errors = self._validate_external_dependencies(issues, project_id)
-                if validation_errors:
-                    logger.error("External dependency validation failed:")
-                    for error in validation_errors:
-                        logger.error("  - %s", error)
-                    raise PlatformError("Cannot proceed with invalid external dependencies")
+            issues = config["issues"]
 
-        # Create issues
-        logger.info("Creating %s issues...", len(issues))
-        for idx, issue_config in enumerate(issues, 1):
-            try:
-                self.create_issue(issue_config, epic_id)
-            except (PlatformError, ValueError) as err:
-                logger.error("Failed to create issue %s: %s", idx, err)
-                raise
+            # Extract project ID for validation (need a placeholder for dry-run)
+            if not self.dry_run:
+                # Validate external dependencies upfront before creating issues
+                project_id = self._get_project_id_for_validation()
+                if project_id:
+                    validation_errors = self._validate_external_dependencies(issues, project_id)
+                    if validation_errors:
+                        logger.error("External dependency validation failed:")
+                        for error in validation_errors:
+                            logger.error("  - %s", error)
+                        raise PlatformError("Cannot proceed with invalid external dependencies")
 
-        # Create dependency links after all issues are created
-        if self.issue_id_mapping:
-            self._create_dependency_links(issues)
+            # Create issues
+            logger.info("Creating %s issues...", len(issues))
+            for idx, issue_config in enumerate(issues, 1):
+                try:
+                    self.create_issue(issue_config, epic_id)
+                except (PlatformError, ValueError) as err:
+                    logger.error("Failed to create issue %s: %s", idx, err)
+                    raise
+
+            # Create dependency links after all issues are created
+            if self.issue_id_mapping:
+                self._create_dependency_links(issues)
+        elif has_epic and not has_issues:
+            raise ValueError("YAML contains 'epic' but no 'issues' section with at least one issue")
+        elif has_issues and not has_epic:
+            raise ValueError("YAML contains 'issues' but no 'epic' section")
 
         logger.info("Successfully completed all operations")
 
@@ -743,6 +774,58 @@ class EpicIssueCreator:
                     return project_path
 
         return None
+
+    def create_milestone(self, title: str, description: str = "", due_date: str = "") -> dict:
+        """Create a group-level GitLab milestone.
+
+        Args:
+            title: Milestone title (required).
+            description: Optional description.
+            due_date: Optional due date in YYYY-MM-DD format.
+
+        Returns:
+            Dict with 'iid', 'id', and 'web_url' keys from the API response.
+
+        Raises:
+            PlatformError: If group is not configured or the API call fails.
+            ValueError: If title is empty.
+        """
+        if not title:
+            raise ValueError("Milestone title must not be empty")
+
+        if not self.group:
+            raise PlatformError(
+                "Group path is required to create milestones.\n"
+                "Please set 'default_group' in your glab_config.yaml file."
+            )
+
+        logger.info("Creating milestone: %s", title)
+
+        encoded_group = urllib.parse.quote(self.group, safe="")
+        cmd = ["api", "-X", "POST", f"groups/{encoded_group}/milestones", "-f", f"title={title}"]
+
+        if description:
+            cmd.extend(["-f", f"description={description}"])
+        if due_date:
+            cmd.extend(["-f", f"due_date={due_date}"])
+
+        if self.dry_run:
+            logger.info("[DRY RUN] Would execute: glab %s", " ".join(cmd))
+            return {"iid": "DRY_RUN", "id": "DRY_RUN", "web_url": "DRY_RUN_URL"}
+
+        output = self._run_glab_command(cmd)
+
+        try:
+            response = json.loads(output)
+            iid = str(response["iid"])
+            gid = str(response["id"])
+            web_url = str(response["web_url"])
+            logger.info("Created milestone with ID: %s, IID: %s", gid, iid)
+            return {"iid": iid, "id": gid, "web_url": web_url}
+        except (json.JSONDecodeError, KeyError) as err:
+            raise PlatformError(
+                f"Failed to parse milestone creation response: {err}\nOutput: {output}"
+            ) from err
 
     def print_summary(self) -> None:
         """Print a summary of created issues."""
