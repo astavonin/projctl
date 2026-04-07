@@ -647,8 +647,10 @@ class EpicIssueCreator:
         elif has_epic and not has_issues:
             # Epic-only creation (no issues needed yet)
             epic_config = config["epic"]
-            epic_iid = self.create_epic(epic_config)
-            if not self.dry_run:
+            if self.dry_run:
+                print(f"[dry-run] Would create epic: {epic_config.get('title', '')}")
+            else:
+                epic_iid = self.create_epic(epic_config)
                 print(f"Created epic &{epic_iid}: {epic_config.get('title', '')}")
         elif has_issues and not has_epic:
             raise ValueError("YAML contains 'issues' but no 'epic' section")

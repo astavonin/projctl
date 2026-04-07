@@ -181,16 +181,49 @@ class TicketUpdater:
             ValueError: If no matching milestone is found.
             PlatformError: If the API call fails.
         """
+        # Strip leading % so callers can pass either "14" or "%14"
+        ref = milestone_ref.lstrip("%")
         encoded_group = urllib.parse.quote(group_path, safe="")
         # pylint: disable=protected-access
         # TicketLoader's _run_glab_command is an internal helper shared between
         # sibling handler classes; no public API exists for command execution.
-        output = self._loader._run_glab_command(["api", f"groups/{encoded_group}/milestones"])
+        # per_page=100 and state=all ensure all milestones are returned in one request.
+        output = self._loader._run_glab_command(
+            ["api", f"groups/{encoded_group}/milestones?per_page=100&state=all"]
+        )
         milestones = json.loads(output)
         for m in milestones:
-            if str(m.get("iid")) == milestone_ref or m.get("title") == milestone_ref:
+            if str(m.get("iid")) == ref or m.get("title") == ref:
                 return str(m["id"])
         raise ValueError(f"Group milestone not found: {milestone_ref!r}")
+
+    def _set_epic_milestone_via_graphql(self, work_item_id: int, milestone_db_id: str) -> None:
+        """Set an epic's milestone using the GraphQL workItemUpdate mutation.
+
+        GitLab 15.9+ backs epics with work items. The REST epics API silently
+        ignores ``milestone_id`` on these epics; GraphQL ``milestoneWidget`` is
+        the only supported path.
+
+        Args:
+            work_item_id: The numeric work_item_id from the epic REST response.
+            milestone_db_id: The milestone's global database ID (not iid) as a string.
+        """
+        wi_gid = f"gid://gitlab/WorkItem/{work_item_id}"
+        ms_gid = f"gid://gitlab/Milestone/{milestone_db_id}"
+        query = (
+            "mutation { workItemUpdate(input: { "
+            f'id: "{wi_gid}", '
+            f'milestoneWidget: {{ milestoneId: "{ms_gid}" }} '
+            "}) { workItem { title } errors } }"
+        )
+        # pylint: disable=protected-access
+        # TicketLoader's _run_glab_command is an internal helper shared between
+        # sibling handler classes; no public API exists for command execution.
+        output = self._loader._run_glab_command(["api", "graphql", "-f", f"query={query}"])
+        resp = json.loads(output)
+        errors = resp.get("data", {}).get("workItemUpdate", {}).get("errors", [])
+        if errors:
+            raise PlatformError(f"GraphQL milestone assignment failed: {errors}")
 
     def _resolve_epic_global_id(self, epic_ref: str) -> tuple:
         """Resolve an epic reference to its global database ID and iid.
@@ -526,14 +559,24 @@ class TicketUpdater:
         if labels_value is not None:
             fields["labels"] = labels_value
 
-        if milestone is not None:
-            fields["milestone_id"] = self._resolve_group_milestone_id(milestone, group_path)
-
         # pylint: disable=protected-access
         # TicketLoader's _run_glab_command is an internal helper shared between
         # sibling handler classes; no public API exists for command execution.
         output = self._loader._run_glab_command(self._build_put_cmd(endpoint, fields))
         result: Dict[str, Any] = json.loads(output)
+
+        if milestone is not None:
+            # GitLab 15.9+ epics are backed by work items; the REST epics API silently
+            # ignores milestone_id. Use GraphQL workItemUpdate with milestoneWidget instead.
+            milestone_db_id = self._resolve_group_milestone_id(milestone, group_path)
+            work_item_id = result.get("work_item_id")
+            if work_item_id:
+                self._set_epic_milestone_via_graphql(work_item_id, milestone_db_id)
+            else:
+                # Fallback for older GitLab instances that don't use work items.
+                fields["milestone_id"] = milestone_db_id
+                output = self._loader._run_glab_command(self._build_put_cmd(endpoint, fields))
+                result = json.loads(output)
 
         ref_display = result.get("iid", iid)
         result_title = result.get("title", "")
