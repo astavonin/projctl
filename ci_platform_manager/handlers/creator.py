@@ -209,6 +209,17 @@ class EpicIssueCreator:
         if "title" not in issue_config:
             raise ValueError("Issue must have a 'title' field")
 
+        if "weight" not in issue_config:
+            raise ValueError(
+                f"Issue '{issue_config['title']}' is missing required 'weight' field"
+            )
+        weight = issue_config["weight"]
+        if not isinstance(weight, int) or weight < 0:
+            raise ValueError(
+                f"Issue '{issue_config['title']}' weight must be a non-negative integer, "
+                f"got: {weight!r}"
+            )
+
         # Validate required sections in description
         self._validate_issue_description(issue_config)
 
@@ -267,6 +278,9 @@ class EpicIssueCreator:
         logger.info("Created issue: %s", issue_url)
         # Extract iid from the created issue for dependency tracking
         issue_iid = self._extract_issue_iid_from_url(issue_url)
+
+        # Set weight via API (glab issue create does not support weight as a flag)
+        self._set_issue_weight(issue_url, issue_iid, issue_config["weight"])
 
         # Track the yaml_id mapping for dependency linking
         if yaml_id:
@@ -414,6 +428,32 @@ class EpicIssueCreator:
         except PlatformError as err:
             logger.warning("Failed to link issue to epic: %s", err)
             # Don't fail the whole operation if linking fails
+
+    def _set_issue_weight(self, issue_url: str, issue_iid: str, weight: int) -> None:
+        """Set the weight of an issue via the GitLab API.
+
+        Args:
+            issue_url: Issue URL used to derive the project path.
+            issue_iid: Project-scoped issue IID.
+            weight: Non-negative integer weight value.
+
+        Raises:
+            PlatformError: If the API call fails.
+        """
+        project_path, iid = parse_issue_url(issue_url)
+        if not project_path or not iid:
+            logger.warning("Cannot set weight: unable to parse project path from %s", issue_url)
+            return
+
+        encoded_project = urllib.parse.quote(project_path, safe="")
+        api_endpoint = f"projects/{encoded_project}/issues/{iid}"
+        cmd = ["api", "-X", "PUT", api_endpoint, "-f", f"weight={weight}"]
+
+        try:
+            self._run_glab_command(cmd)
+            logger.info("Set weight=%s on issue #%s", weight, issue_iid)
+        except PlatformError as err:
+            logger.warning("Failed to set weight on issue #%s: %s", issue_iid, err)
 
     def _create_issue_dependency_link(
         self, blocking_issue_iid: str, blocked_issue_iid: str, project_id: str

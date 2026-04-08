@@ -159,6 +159,7 @@ def sample_issue_yaml_data() -> Dict[str, Any]:
                 "description": "# Description\n\nTask description\n\n# Acceptance Criteria\n\n- AC1",
                 "labels": ["type::feature"],
                 "assignee": "testuser",
+                "weight": 3,
             },
             {
                 "id": "task-2",
@@ -166,6 +167,7 @@ def sample_issue_yaml_data() -> Dict[str, Any]:
                 "description": "# Description\n\nSecond task\n\n# Acceptance Criteria\n\n- AC2",
                 "labels": ["type::bug"],
                 "dependencies": ["task-1"],
+                "weight": 5,
             },
         ],
     }

@@ -508,6 +508,7 @@ epic:
 issues:
   - id: "task-1"
     title: "Task 1"
+    weight: 3
     description: |
       # Description
       Task description
@@ -518,6 +519,7 @@ issues:
 
   - id: "task-2"
     title: "Task 2"
+    weight: 5
     description: |
       # Description
       Another task

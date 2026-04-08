@@ -109,16 +109,23 @@ class TestCreateIssue:
         issue_config = {
             "title": "Test Issue",
             "description": "# Description\n\nTest description\n\n# Acceptance Criteria\n\n- AC1",
+            "weight": 3,
         }
 
         creator.create_issue(issue_config, epic_id=None)
 
-        # Verify glab issue create was called
-        mock_run.assert_called_once()
-        call_args = mock_run.call_args[0][0]
-        assert call_args[0] == "glab"
-        assert "issue" in call_args
-        assert "create" in call_args
+        # First call: glab issue create; second call: glab api PUT (set weight)
+        assert mock_run.call_count == 2
+        create_args = mock_run.call_args_list[0][0][0]
+        assert create_args[0] == "glab"
+        assert "issue" in create_args
+        assert "create" in create_args
+
+        weight_args = mock_run.call_args_list[1][0][0]
+        assert "api" in weight_args
+        assert "-X" in weight_args
+        assert "PUT" in weight_args
+        assert any("weight=3" in a for a in weight_args)
 
     @patch("subprocess.run")
     def test_create_issue_with_metadata(self, mock_run: Mock, new_config_path: Path) -> None:
@@ -137,16 +144,21 @@ class TestCreateIssue:
             "assignee": "testuser",
             "milestone": "v1.0",
             "due_date": "2026-03-01",
+            "weight": 2,
         }
 
         creator.create_issue(issue_config, epic_id=None)
 
-        # Verify metadata was passed in command
-        call_args = mock_run.call_args[0][0]
-        assert "--assignee" in call_args
-        assert "testuser" in call_args
-        assert "--milestone" in call_args
-        assert "v1.0" in call_args
+        # Verify metadata was passed in the create command
+        create_args = mock_run.call_args_list[0][0][0]
+        assert "--assignee" in create_args
+        assert "testuser" in create_args
+        assert "--milestone" in create_args
+        assert "v1.0" in create_args
+
+        # Weight is set via a separate PUT API call
+        weight_args = mock_run.call_args_list[1][0][0]
+        assert any("weight=2" in a for a in weight_args)
 
     @patch("subprocess.run")
     def test_create_issue_command_failure(self, mock_run: Mock, new_config_path: Path) -> None:
@@ -161,6 +173,7 @@ class TestCreateIssue:
         issue_config = {
             "title": "Test Issue",
             "description": "# Description\n\nTest\n\n# Acceptance Criteria\n\n- AC1",
+            "weight": 1,
         }
 
         with pytest.raises(PlatformError, match="Command failed"):
@@ -252,6 +265,47 @@ class TestValidation:
         with pytest.raises(ValueError, match="missing required sections"):
             creator._validate_issue_description(issue_config)
 
+    def test_create_issue_missing_weight_raises(self, new_config_path: Path) -> None:
+        """Issue without weight field raises ValueError."""
+        config = Config(new_config_path)
+        creator = EpicIssueCreator(config)
+
+        issue_config = {
+            "title": "No Weight Issue",
+            "description": "# Description\n\nContent\n\n# Acceptance Criteria\n\n- AC1",
+        }
+
+        with pytest.raises(ValueError, match="missing required 'weight' field"):
+            creator.create_issue(issue_config, epic_id=None)
+
+    def test_create_issue_negative_weight_raises(self, new_config_path: Path) -> None:
+        """Issue with negative weight raises ValueError."""
+        config = Config(new_config_path)
+        creator = EpicIssueCreator(config)
+
+        issue_config = {
+            "title": "Bad Weight Issue",
+            "description": "# Description\n\nContent\n\n# Acceptance Criteria\n\n- AC1",
+            "weight": -1,
+        }
+
+        with pytest.raises(ValueError, match="weight must be a non-negative integer"):
+            creator.create_issue(issue_config, epic_id=None)
+
+    def test_create_issue_non_integer_weight_raises(self, new_config_path: Path) -> None:
+        """Issue with non-integer weight raises ValueError."""
+        config = Config(new_config_path)
+        creator = EpicIssueCreator(config)
+
+        issue_config = {
+            "title": "Bad Weight Issue",
+            "description": "# Description\n\nContent\n\n# Acceptance Criteria\n\n- AC1",
+            "weight": "high",
+        }
+
+        with pytest.raises(ValueError, match="weight must be a non-negative integer"):
+            creator.create_issue(issue_config, epic_id=None)
+
 
 class TestDryRun:
     """Test dry-run mode."""
@@ -265,6 +319,7 @@ class TestDryRun:
         issue_config = {
             "title": "Test Issue",
             "description": "# Description\n\nTest\n\n# Acceptance Criteria\n\n- AC1",
+            "weight": 2,
         }
 
         # Should not raise and should not call subprocess
@@ -325,6 +380,7 @@ class TestProcessYamlFileMilestone:
                     {
                         "title": "First Issue",
                         "description": ("# Description\n\nDesc\n\n# Acceptance Criteria\n\n- AC1"),
+                        "weight": 3,
                     }
                 ],
             },
