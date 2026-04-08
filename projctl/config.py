@@ -29,7 +29,7 @@ class Config:
     1. If --config is specified: use that path (fail if not found)
     2. ./glab_config.yaml (project-local legacy, PRIORITY)
     3. ./config.yaml (project-local new format)
-    4. ~/.config/ci_platform_manager/config.yaml (user config new)
+    4. ~/.config/projctl/config.yaml (user config new)
     5. ~/.config/glab_config.yaml (user config legacy)
     """
 
@@ -59,7 +59,7 @@ class Config:
         1. Explicit --config path if provided
         2. ./glab_config.yaml (project-local, current behavior)
         3. ./config.yaml (project-local, new format)
-        4. ~/.config/ci_platform_manager/config.yaml (user config, new)
+        4. ~/.config/projctl/config.yaml (user config, new)
         5. ~/.config/glab_config.yaml (user config, legacy)
 
         Args:
@@ -86,7 +86,7 @@ class Config:
         search_paths = [
             Path.cwd() / "glab_config.yaml",  # Project-local legacy (PRIORITY)
             Path.cwd() / "config.yaml",  # Project-local new format
-            Path.home() / ".config" / "ci_platform_manager" / "config.yaml",  # User config new
+            Path.home() / ".config" / "projctl" / "config.yaml",  # User config new
             Path.home() / ".config" / "glab_config.yaml",  # User config legacy
         ]
 

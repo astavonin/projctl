@@ -55,10 +55,10 @@ test: venv
 # Run all linters
 lint: pylint
 	@echo "Running flake8..."
-	$(FLAKE8) ci_platform_manager || true
+	$(FLAKE8) projctl || true
 	@echo ""
 	@echo "Running mypy..."
-	$(MYPY) ci_platform_manager || true
+	$(MYPY) projctl || true
 
 # Run pylint only
 pylint: venv
@@ -66,8 +66,8 @@ pylint: venv
 		echo "Pylint not installed. Run 'make install' first."; \
 		exit 1; \
 	fi
-	@echo "Running pylint on ci_platform_manager..."
-	$(PYLINT) ci_platform_manager
+	@echo "Running pylint on projctl..."
+	$(PYLINT) projctl
 
 # Format code
 format: venv
@@ -76,7 +76,7 @@ format: venv
 		exit 1; \
 	fi
 	@echo "Formatting with black..."
-	$(BLACK) ci_platform_manager tests
+	$(BLACK) projctl tests
 
 # Clean build artifacts
 clean:

@@ -1,10 +1,10 @@
-"""Tests for ci_platform_manager.utils.config_migration module."""
+"""Tests for projctl.utils.config_migration module."""
 
 from typing import Any, Dict
 
 import pytest
 
-from ci_platform_manager.utils.config_migration import transform_issue_template
+from projctl.utils.config_migration import transform_issue_template
 
 
 class TestTransformIssueTemplate:

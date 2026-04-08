@@ -13,30 +13,30 @@ Multi-platform CI automation tool for GitLab/GitHub workflow management.
 ## Installation
 
 ```bash
-pipx install git+https://github.com/astavonin/ci-platform-manager.git
+pipx install git+https://github.com/astavonin/projctl.git
 ```
 
 **Development:**
 
 ```bash
-git clone git@github.com:astavonin/ci-platform-manager.git
-pipx install -e ./ci-platform-manager
+git clone git@github.com:astavonin/projctl.git
+pipx install -e ./projctl
 ```
 
 ## Usage
 
 ```bash
-ci-platform-manager create --dry-run epic.yaml   # preview issue creation
-ci-platform-manager create epic.yaml             # create issues
+projctl create --dry-run epic.yaml   # preview issue creation
+projctl create epic.yaml             # create issues
 
-ci-platform-manager load #113    # load issue
-ci-platform-manager load &21     # load epic
-ci-platform-manager load !134    # load MR
+projctl load #113    # load issue
+projctl load &21     # load epic
+projctl load !134    # load MR
 
-ci-platform-manager search issues "streaming"
+projctl search issues "streaming"
 
-ci-platform-manager sync push    # push planning → Google Drive
-ci-platform-manager sync pull    # pull Google Drive → planning
+projctl sync push    # push planning → Google Drive
+projctl sync pull    # pull Google Drive → planning
 ```
 
 See `CLAUDE.md` for full configuration reference, YAML format, and all commands.

@@ -1,10 +1,10 @@
-"""Tests for ci_platform_manager.utils.validation module."""
+"""Tests for projctl.utils.validation module."""
 
 from typing import List, Optional
 
 import pytest
 
-from ci_platform_manager.utils.validation import validate_issue_description, validate_labels
+from projctl.utils.validation import validate_issue_description, validate_labels
 
 
 class TestValidateLabels:

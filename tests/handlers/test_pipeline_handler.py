@@ -1,4 +1,4 @@
-"""Tests for ci_platform_manager.handlers.pipeline_handler module."""
+"""Tests for projctl.handlers.pipeline_handler module."""
 
 import json
 import subprocess
@@ -7,9 +7,9 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from ci_platform_manager.config import Config
-from ci_platform_manager.exceptions import PlatformError
-from ci_platform_manager.handlers.pipeline_handler import PipelineHandler
+from projctl.config import Config
+from projctl.exceptions import PlatformError
+from projctl.handlers.pipeline_handler import PipelineHandler
 
 
 class TestPipelineHandlerInit:
@@ -58,7 +58,7 @@ class TestGetCurrentBranch:
 class TestGetCurrentPipeline:
     """Test getting current pipeline for a branch."""
 
-    @patch("ci_platform_manager.handlers.pipeline_handler.PipelineHandler._run_glab_command")
+    @patch("projctl.handlers.pipeline_handler.PipelineHandler._run_glab_command")
     def test_get_current_pipeline_success(self, mock_run_glab: Mock, new_config_path: Path) -> None:
         """Get pipeline successfully from MR."""
         config = Config(new_config_path)
@@ -91,7 +91,7 @@ class TestGetCurrentPipeline:
         assert "api" in call_args
         assert "merge_requests" in " ".join(call_args)
 
-    @patch("ci_platform_manager.handlers.pipeline_handler.PipelineHandler._run_glab_command")
+    @patch("projctl.handlers.pipeline_handler.PipelineHandler._run_glab_command")
     def test_get_current_pipeline_no_mr(self, mock_run_glab: Mock, new_config_path: Path) -> None:
         """No MR found for branch raises PlatformError."""
         config = Config(new_config_path)
@@ -103,7 +103,7 @@ class TestGetCurrentPipeline:
         with pytest.raises(PlatformError, match="No merge request found"):
             handler.get_current_pipeline("feature/test")
 
-    @patch("ci_platform_manager.handlers.pipeline_handler.PipelineHandler._run_glab_command")
+    @patch("projctl.handlers.pipeline_handler.PipelineHandler._run_glab_command")
     def test_get_current_pipeline_no_pipeline(
         self, mock_run_glab: Mock, new_config_path: Path
     ) -> None:
@@ -121,7 +121,7 @@ class TestGetCurrentPipeline:
             handler.get_current_pipeline("feature/test")
 
     @patch(
-        "ci_platform_manager.handlers.pipeline_handler.PipelineHandler.get_project_from_remote",
+        "projctl.handlers.pipeline_handler.PipelineHandler.get_project_from_remote",
         return_value=None,
     )
     def test_get_current_pipeline_no_config(self, mock_remote: Mock, tmp_path: Path) -> None:
@@ -140,7 +140,7 @@ class TestGetCurrentPipeline:
 class TestGetFailedJobs:
     """Test getting failed jobs from pipeline."""
 
-    @patch("ci_platform_manager.handlers.pipeline_handler.PipelineHandler._run_glab_command")
+    @patch("projctl.handlers.pipeline_handler.PipelineHandler._run_glab_command")
     def test_get_failed_jobs_multiple(self, mock_run_glab: Mock, new_config_path: Path) -> None:
         """Get multiple failed jobs successfully."""
         config = Config(new_config_path)
@@ -185,7 +185,7 @@ class TestGetFailedJobs:
         assert "api" in call_args
         assert "pipelines/456/jobs" in " ".join(call_args)
 
-    @patch("ci_platform_manager.handlers.pipeline_handler.PipelineHandler._run_glab_command")
+    @patch("projctl.handlers.pipeline_handler.PipelineHandler._run_glab_command")
     def test_get_failed_jobs_none(self, mock_run_glab: Mock, new_config_path: Path) -> None:
         """No failed jobs returns empty list."""
         config = Config(new_config_path)
@@ -215,7 +215,7 @@ class TestGetFailedJobs:
 
         assert len(failed_jobs) == 0
 
-    @patch("ci_platform_manager.handlers.pipeline_handler.PipelineHandler._run_glab_command")
+    @patch("projctl.handlers.pipeline_handler.PipelineHandler._run_glab_command")
     def test_get_failed_jobs_empty_pipeline(
         self, mock_run_glab: Mock, new_config_path: Path
     ) -> None:
@@ -233,7 +233,7 @@ class TestGetFailedJobs:
 class TestGetJobLogs:
     """Test getting job logs."""
 
-    @patch("ci_platform_manager.handlers.pipeline_handler.PipelineHandler._run_glab_command")
+    @patch("projctl.handlers.pipeline_handler.PipelineHandler._run_glab_command")
     def test_get_job_logs_success(self, mock_run_glab: Mock, new_config_path: Path) -> None:
         """Get job logs successfully."""
         config = Config(new_config_path)
@@ -252,7 +252,7 @@ class TestGetJobLogs:
         assert "api" in call_args
         assert "jobs/789/trace" in " ".join(call_args)
 
-    @patch("ci_platform_manager.handlers.pipeline_handler.PipelineHandler._run_glab_command")
+    @patch("projctl.handlers.pipeline_handler.PipelineHandler._run_glab_command")
     def test_get_job_logs_not_found(self, mock_run_glab: Mock, new_config_path: Path) -> None:
         """Job not found raises PlatformError."""
         config = Config(new_config_path)
@@ -263,7 +263,7 @@ class TestGetJobLogs:
         with pytest.raises(PlatformError, match="Failed to fetch logs"):
             handler.get_job_logs(789)
 
-    @patch("ci_platform_manager.handlers.pipeline_handler.PipelineHandler._run_glab_command")
+    @patch("projctl.handlers.pipeline_handler.PipelineHandler._run_glab_command")
     def test_get_job_logs_empty(self, mock_run_glab: Mock, new_config_path: Path) -> None:
         """Empty logs returns empty string."""
         config = Config(new_config_path)

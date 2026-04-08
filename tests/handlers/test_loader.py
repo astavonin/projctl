@@ -1,4 +1,4 @@
-"""Tests for ci_platform_manager.handlers.loader module."""
+"""Tests for projctl.handlers.loader module."""
 
 import json
 import subprocess
@@ -7,9 +7,9 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from ci_platform_manager.config import Config
-from ci_platform_manager.exceptions import PlatformError
-from ci_platform_manager.handlers.loader import TicketLoader
+from projctl.config import Config
+from projctl.exceptions import PlatformError
+from projctl.handlers.loader import TicketLoader
 
 
 class TestTicketLoaderInit:

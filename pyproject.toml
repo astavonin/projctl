@@ -3,9 +3,9 @@ requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ci-platform-manager"
+name = "projctl"
 version = "2.0.0"
-description = "Multi-platform CI automation tool for GitLab and GitHub"
+description = "GitLab/GitHub project management CLI: issues, epics, milestones, MRs, and planning sync"
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
@@ -41,12 +41,12 @@ dev = [
 ]
 
 [project.scripts]
-ci-platform-manager = "ci_platform_manager.cli:main"
+projctl = "projctl.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/genai-automations/ci-platform-manager"
-Repository = "https://github.com/genai-automations/ci-platform-manager"
-Documentation = "https://github.com/genai-automations/ci-platform-manager#readme"
+Homepage = "https://github.com/astavonin/projctl"
+Repository = "https://github.com/astavonin/projctl"
+Documentation = "https://github.com/astavonin/projctl#readme"
 
 [tool.setuptools.packages.find]
 exclude = ["tests", "tests.*"]
@@ -60,7 +60,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --cov=ci_platform_manager --cov-report=term-missing"
+addopts = "-v --cov=projctl --cov-report=term-missing"
 
 [tool.mypy]
 python_version = "3.9"

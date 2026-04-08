@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for ci_platform_manager tests."""
+"""Shared pytest fixtures for projctl tests."""
 
 import tempfile
 from pathlib import Path

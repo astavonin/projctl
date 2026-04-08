@@ -1,4 +1,4 @@
-"""Tests for ci_platform_manager.handlers.updater module."""
+"""Tests for projctl.handlers.updater module."""
 
 # Tests intentionally access protected members to unit-test internal helpers.
 # pylint: disable=protected-access
@@ -11,10 +11,10 @@ from unittest.mock import Mock, patch
 import pytest
 import yaml
 
-from ci_platform_manager.cli import main as cli_main
-from ci_platform_manager.config import Config
-from ci_platform_manager.exceptions import PlatformError
-from ci_platform_manager.handlers.updater import TicketUpdater
+from projctl.cli import main as cli_main
+from projctl.config import Config
+from projctl.exceptions import PlatformError
+from projctl.handlers.updater import TicketUpdater
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -946,7 +946,7 @@ class TestCmdUpdateEpicValidation:
         old_argv = sys.argv
         try:
             sys.argv = [
-                "ci-platform-manager",
+                "projctl",
                 "--config",
                 str(new_config_path),
                 "update",
@@ -966,7 +966,7 @@ class TestCmdUpdateEpicValidation:
         old_argv = sys.argv
         try:
             sys.argv = [
-                "ci-platform-manager",
+                "projctl",
                 "--config",
                 str(new_config_path),
                 "update",
@@ -986,7 +986,7 @@ class TestCmdUpdateEpicValidation:
         old_argv = sys.argv
         try:
             sys.argv = [
-                "ci-platform-manager",
+                "projctl",
                 "--config",
                 str(new_config_path),
                 "update",
@@ -1009,7 +1009,7 @@ class TestCmdUpdateEpicValidation:
         old_argv = sys.argv
         try:
             sys.argv = [
-                "ci-platform-manager",
+                "projctl",
                 "--config",
                 str(new_config_path),
                 "update",
@@ -1037,7 +1037,7 @@ class TestCmdUpdateEpicValidation:
         old_argv = sys.argv
         try:
             sys.argv = [
-                "ci-platform-manager",
+                "projctl",
                 "--config",
                 str(new_config_path),
                 "update",

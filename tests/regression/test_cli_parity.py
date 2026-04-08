@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from ci_platform_manager.cli import main
+from projctl.cli import main
 
 
 class TestCLICommandAvailability:
@@ -19,7 +19,7 @@ class TestCLICommandAvailability:
     def test_help_command_works(self) -> None:
         """Help command should work."""
         result = subprocess.run(
-            [sys.executable, "-m", "ci_platform_manager", "--help"],
+            [sys.executable, "-m", "projctl", "--help"],
             capture_output=True,
             text=True,
         )
@@ -30,7 +30,7 @@ class TestCLICommandAvailability:
     def test_create_command_exists(self) -> None:
         """Create command should be available."""
         result = subprocess.run(
-            [sys.executable, "-m", "ci_platform_manager", "create", "--help"],
+            [sys.executable, "-m", "projctl", "create", "--help"],
             capture_output=True,
             text=True,
         )
@@ -41,7 +41,7 @@ class TestCLICommandAvailability:
     def test_load_command_exists(self) -> None:
         """Load command should be available."""
         result = subprocess.run(
-            [sys.executable, "-m", "ci_platform_manager", "load", "--help"],
+            [sys.executable, "-m", "projctl", "load", "--help"],
             capture_output=True,
             text=True,
         )
@@ -51,7 +51,7 @@ class TestCLICommandAvailability:
     def test_search_command_exists(self) -> None:
         """Search command should be available."""
         result = subprocess.run(
-            [sys.executable, "-m", "ci_platform_manager", "search", "--help"],
+            [sys.executable, "-m", "projctl", "search", "--help"],
             capture_output=True,
             text=True,
         )
@@ -61,7 +61,7 @@ class TestCLICommandAvailability:
     def test_comment_command_exists(self) -> None:
         """Comment command should be available."""
         result = subprocess.run(
-            [sys.executable, "-m", "ci_platform_manager", "comment", "--help"],
+            [sys.executable, "-m", "projctl", "comment", "--help"],
             capture_output=True,
             text=True,
         )
@@ -71,7 +71,7 @@ class TestCLICommandAvailability:
     def test_create_mr_command_exists(self) -> None:
         """Create-mr command should be available."""
         result = subprocess.run(
-            [sys.executable, "-m", "ci_platform_manager", "create-mr", "--help"],
+            [sys.executable, "-m", "projctl", "create-mr", "--help"],
             capture_output=True,
             text=True,
         )
@@ -121,7 +121,7 @@ class TestCLIOutputFormat:
         # Run CLI command
         monkeypatch.setattr(
             "sys.argv",
-            ["ci-platform-manager", "--config", str(new_config_path), "load", "issue", "#1"],
+            ["projctl", "--config", str(new_config_path), "load", "issue", "#1"],
         )
 
         try:
@@ -156,7 +156,7 @@ class TestCLIOutputFormat:
 
         monkeypatch.setattr(
             "sys.argv",
-            ["ci-platform-manager", "--config", str(new_config_path), "search", "issues", "test"],
+            ["projctl", "--config", str(new_config_path), "search", "issues", "test"],
         )
 
         try:
@@ -179,7 +179,7 @@ class TestCLIOptions:
             [
                 sys.executable,
                 "-m",
-                "ci_platform_manager",
+                "projctl",
                 "--config",
                 str(new_config_path),
                 "--help",
@@ -196,7 +196,7 @@ class TestCLIOptions:
             [
                 sys.executable,
                 "-m",
-                "ci_platform_manager",
+                "projctl",
                 "--config",
                 str(new_config_path),
                 "create",
@@ -223,7 +223,7 @@ class TestReferenceFormats:
 
         monkeypatch.setattr(
             "sys.argv",
-            ["ci-platform-manager", "--config", str(new_config_path), "load", "issue", "#123"],
+            ["projctl", "--config", str(new_config_path), "load", "issue", "#123"],
         )
 
         try:
@@ -245,7 +245,7 @@ class TestReferenceFormats:
 
         monkeypatch.setattr(
             "sys.argv",
-            ["ci-platform-manager", "--config", str(new_config_path), "load", "epic", "&21"],
+            ["projctl", "--config", str(new_config_path), "load", "epic", "&21"],
         )
 
         try:
@@ -274,7 +274,7 @@ class TestReferenceFormats:
 
         monkeypatch.setattr(
             "sys.argv",
-            ["ci-platform-manager", "--config", str(new_config_path), "load", "milestone", "%123"],
+            ["projctl", "--config", str(new_config_path), "load", "milestone", "%123"],
         )
 
         try:
@@ -293,7 +293,7 @@ class TestReferenceFormats:
 
         monkeypatch.setattr(
             "sys.argv",
-            ["ci-platform-manager", "--config", str(new_config_path), "load", "mr", "!134"],
+            ["projctl", "--config", str(new_config_path), "load", "mr", "!134"],
         )
 
         try:
@@ -313,7 +313,7 @@ class TestReferenceFormats:
         monkeypatch.setattr(
             "sys.argv",
             [
-                "ci-platform-manager",
+                "projctl",
                 "--config",
                 str(new_config_path),
                 "load",
@@ -342,7 +342,7 @@ class TestErrorHandling:
         env = {**os.environ, "HOME": str(temp_dir)}
 
         result = subprocess.run(
-            [sys.executable, "-m", "ci_platform_manager", "load", "issue", "#123"],
+            [sys.executable, "-m", "projctl", "load", "issue", "#123"],
             capture_output=True,
             text=True,
             cwd=str(temp_dir),
@@ -360,7 +360,7 @@ class TestErrorHandling:
 
         monkeypatch.setattr(
             "sys.argv",
-            ["ci-platform-manager", "--config", str(new_config_path), "load", "issue", "#123"],
+            ["projctl", "--config", str(new_config_path), "load", "issue", "#123"],
         )
 
         # main() returns an exit code; sys.exit() is called by __main__.py.

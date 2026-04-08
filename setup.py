@@ -8,13 +8,13 @@ readme_file = Path(__file__).parent / 'README.md'
 long_description = readme_file.read_text() if readme_file.exists() else ''
 
 setup(
-    name='ci-platform-manager',
+    name='projctl',
     version='2.0.0',
     author='GenAI Automations',
     description='Multi-platform CI automation tool for GitLab and GitHub',
     long_description=long_description,
     long_description_content_type='text/markdown',
-    url='https://github.com/genai-automations/ci-platform-manager',
+    url='https://github.com/astavonin/projctl',
     packages=find_packages(exclude=['tests', 'tests.*']),
     python_requires='>=3.7',
     install_requires=[
@@ -22,7 +22,7 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'ci-platform-manager=ci_platform_manager.cli:main',
+            'projctl=projctl.cli:main',
         ],
     },
     classifiers=[

@@ -1,4 +1,4 @@
-"""Tests for ci_platform_manager.handlers.creator module."""
+"""Tests for projctl.handlers.creator module."""
 
 import subprocess
 from pathlib import Path
@@ -8,9 +8,9 @@ from unittest.mock import Mock, patch
 import pytest
 import yaml
 
-from ci_platform_manager.config import Config
-from ci_platform_manager.exceptions import PlatformError
-from ci_platform_manager.handlers.creator import EpicIssueCreator
+from projctl.config import Config
+from projctl.exceptions import PlatformError
+from projctl.handlers.creator import EpicIssueCreator
 
 
 class TestEpicIssueCreatorInit:

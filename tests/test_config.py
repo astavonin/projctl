@@ -1,4 +1,4 @@
-"""Tests for ci_platform_manager.config module."""
+"""Tests for projctl.config module."""
 
 import warnings
 from pathlib import Path
@@ -7,7 +7,7 @@ from typing import Any, Dict
 import pytest
 import yaml
 
-from ci_platform_manager.config import Config, ConfigurationError
+from projctl.config import Config, ConfigurationError
 
 
 class TestConfigLoading:

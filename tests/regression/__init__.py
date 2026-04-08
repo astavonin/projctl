@@ -1,1 +1,1 @@
-"""Regression tests for ci_platform_manager."""
+"""Regression tests for projctl."""

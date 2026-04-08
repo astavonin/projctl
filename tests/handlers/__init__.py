@@ -1,1 +1,1 @@
-"""Handler tests for ci_platform_manager."""
+"""Handler tests for projctl."""

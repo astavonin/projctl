@@ -10,7 +10,7 @@ from typing import Any, Dict
 import pytest
 import yaml
 
-from ci_platform_manager.config import Config
+from projctl.config import Config
 
 
 class TestConfigMigration:

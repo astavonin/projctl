@@ -1,4 +1,4 @@
-"""Tests for ci_platform_manager.utils.git_helpers module."""
+"""Tests for projctl.utils.git_helpers module."""
 
 import subprocess
 from pathlib import Path
@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from ci_platform_manager.utils.git_helpers import get_current_repo_path
+from projctl.utils.git_helpers import get_current_repo_path
 
 
 class TestGetCurrentRepoPath:

@@ -1,4 +1,4 @@
-"""Tests for ci_platform_manager.handlers.wiki module."""
+"""Tests for projctl.handlers.wiki module."""
 
 import json
 from pathlib import Path
@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from ci_platform_manager.exceptions import PlatformError
-from ci_platform_manager.handlers.wiki import WikiHandler
+from projctl.exceptions import PlatformError
+from projctl.handlers.wiki import WikiHandler
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -32,7 +32,7 @@ SAMPLE_PAGE = {
 def _make_handler() -> WikiHandler:
     """Create a WikiHandler with a mocked git remote."""
     with patch(
-        "ci_platform_manager.handlers.wiki.get_current_repo_path",
+        "projctl.handlers.wiki.get_current_repo_path",
         return_value=_PROJECT_PATH,
     ):
         return WikiHandler()
@@ -56,7 +56,7 @@ class TestWikiHandlerInit:
     def test_init_no_remote_raises(self) -> None:
         """Missing git remote raises PlatformError."""
         with patch(
-            "ci_platform_manager.handlers.wiki.get_current_repo_path",
+            "projctl.handlers.wiki.get_current_repo_path",
             return_value=None,
         ):
             with pytest.raises(PlatformError, match="Cannot determine project path"):
@@ -71,7 +71,7 @@ class TestWikiHandlerInit:
 class TestListPages:
     """Test WikiHandler.list_pages."""
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_list_pages_prints_slug_and_title(
         self, mock_run: object, capsys: pytest.CaptureFixture
     ) -> None:
@@ -85,7 +85,7 @@ class TestListPages:
         assert "home\tHome" in out
         assert "getting-started\tGetting Started" in out
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_list_pages_calls_correct_endpoint(self, mock_run: object) -> None:
         """The wikis list endpoint is called with the encoded project path."""
         mock_run.return_value = json.dumps([])
@@ -95,7 +95,7 @@ class TestListPages:
 
         mock_run.assert_called_once_with(["api", f"projects/{_ENCODED_PROJECT}/wikis"])
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_list_pages_empty(self, mock_run: object, capsys: pytest.CaptureFixture) -> None:
         """Empty page list prints a helpful message."""
         mock_run.return_value = json.dumps([])
@@ -105,7 +105,7 @@ class TestListPages:
 
         assert "No wiki pages found" in capsys.readouterr().out
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_list_pages_propagates_platform_error(self, mock_run: object) -> None:
         """PlatformError from glab runner is propagated."""
         mock_run.side_effect = PlatformError("glab failed")
@@ -123,7 +123,7 @@ class TestListPages:
 class TestLoadPage:
     """Test WikiHandler.load_page."""
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_load_page_prints_fields(self, mock_run: object, capsys: pytest.CaptureFixture) -> None:
         """Title, slug, format, and content are printed."""
         mock_run.return_value = json.dumps(SAMPLE_PAGE)
@@ -137,7 +137,7 @@ class TestLoadPage:
         assert "markdown" in out
         assert "Welcome to the wiki" in out
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_load_page_calls_correct_endpoint(self, mock_run: object) -> None:
         """The wikis/{slug} endpoint is called."""
         mock_run.return_value = json.dumps(SAMPLE_PAGE)
@@ -147,7 +147,7 @@ class TestLoadPage:
 
         mock_run.assert_called_once_with(["api", f"projects/{_ENCODED_PROJECT}/wikis/home"])
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_load_page_encodes_slug(self, mock_run: object) -> None:
         """Slugs with special characters are URL-encoded."""
         mock_run.return_value = json.dumps(
@@ -169,7 +169,7 @@ class TestLoadPage:
 class TestCreatePage:
     """Test WikiHandler.create_page."""
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_create_page_dry_run_does_not_call_api(self, mock_run: object) -> None:
         """Dry-run mode prints payload and skips the API call."""
         handler = _make_handler()
@@ -178,7 +178,7 @@ class TestCreatePage:
 
         mock_run.assert_not_called()
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_create_page_dry_run_output(
         self, mock_run: object, capsys: pytest.CaptureFixture
     ) -> None:
@@ -192,7 +192,7 @@ class TestCreatePage:
         assert "My Page" in out
         assert "# Content" in out
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_create_page_posts_to_correct_endpoint(self, mock_run: object) -> None:
         """POST is sent to the wikis endpoint."""
         created = {"slug": "my-page", "web_url": "https://gitlab.example.com/wiki/my-page"}
@@ -206,7 +206,7 @@ class TestCreatePage:
         assert "POST" in call_args
         assert f"projects/{_ENCODED_PROJECT}/wikis" in call_args
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_create_page_prints_slug_and_url(
         self, mock_run: object, capsys: pytest.CaptureFixture
     ) -> None:
@@ -221,7 +221,7 @@ class TestCreatePage:
         assert "my-page" in out
         assert "https://gitlab.example.com/wiki/my-page" in out
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_create_page_includes_markdown_format(self, mock_run: object) -> None:
         """The format=markdown field is always sent."""
         created = {"slug": "new", "web_url": "http://example.com"}
@@ -233,7 +233,7 @@ class TestCreatePage:
         call_args = mock_run.call_args[0][0]
         assert "format=markdown" in call_args
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_create_page_content_truncated_in_dry_run(
         self, mock_run: object, capsys: pytest.CaptureFixture
     ) -> None:
@@ -255,7 +255,7 @@ class TestCreatePage:
 class TestUpdatePage:
     """Test WikiHandler.update_page."""
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_update_page_dry_run_does_not_call_api(self, mock_run: object) -> None:
         """Dry-run mode fetches title but skips the PUT call."""
         mock_run.return_value = json.dumps(SAMPLE_PAGE)
@@ -268,7 +268,7 @@ class TestUpdatePage:
         call_args = mock_run.call_args[0][0]
         assert "--method" not in call_args
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_update_page_dry_run_output(
         self, mock_run: object, capsys: pytest.CaptureFixture
     ) -> None:
@@ -282,7 +282,7 @@ class TestUpdatePage:
         assert "dry-run" in out
         assert "home" in out
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_update_page_puts_to_correct_endpoint(self, mock_run: object) -> None:
         """PUT is sent to the wikis/{slug} endpoint."""
         updated = {"slug": "home", "web_url": "https://gitlab.example.com/wiki/home"}
@@ -297,7 +297,7 @@ class TestUpdatePage:
         assert "PUT" in put_call_args
         assert f"projects/{_ENCODED_PROJECT}/wikis/home" in put_call_args
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_update_page_prints_slug_and_url(
         self, mock_run: object, capsys: pytest.CaptureFixture
     ) -> None:
@@ -312,7 +312,7 @@ class TestUpdatePage:
         assert "home" in out
         assert "https://gitlab.example.com/wiki/home" in out
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_update_page_preserves_title(self, mock_run: object) -> None:
         """Existing page title is preserved in the PUT request."""
         updated = {"slug": "home", "web_url": "http://example.com"}
@@ -325,7 +325,7 @@ class TestUpdatePage:
         # title=Home should appear in the --field arguments
         assert "title=Home" in put_call_args
 
-    @patch("ci_platform_manager.handlers.wiki.run_glab_command")
+    @patch("projctl.handlers.wiki.run_glab_command")
     def test_update_page_falls_back_to_slug_on_title_fetch_error(self, mock_run: object) -> None:
         """If fetching the existing title fails, slug is used as fallback title."""
         updated = {"slug": "home", "web_url": "http://example.com"}
@@ -354,10 +354,10 @@ class TestCmdWiki:
         args = argparse.Namespace(wiki_command=wiki_command, **kwargs)
         return args
 
-    @patch("ci_platform_manager.cli.WikiHandler")
+    @patch("projctl.cli.WikiHandler")
     def test_cmd_wiki_list(self, mock_handler_cls: object) -> None:
         """wiki list delegates to handler.list_pages."""
-        from ci_platform_manager.cli import cmd_wiki
+        from projctl.cli import cmd_wiki
 
         args = self._make_args("list")
         result = cmd_wiki(args)
@@ -365,10 +365,10 @@ class TestCmdWiki:
         assert result == 0
         mock_handler_cls.return_value.list_pages.assert_called_once()
 
-    @patch("ci_platform_manager.cli.WikiHandler")
+    @patch("projctl.cli.WikiHandler")
     def test_cmd_wiki_load(self, mock_handler_cls: object) -> None:
         """wiki load delegates to handler.load_page with slug."""
-        from ci_platform_manager.cli import cmd_wiki
+        from projctl.cli import cmd_wiki
 
         args = self._make_args("load", slug="home")
         result = cmd_wiki(args)
@@ -376,10 +376,10 @@ class TestCmdWiki:
         assert result == 0
         mock_handler_cls.return_value.load_page.assert_called_once_with("home")
 
-    @patch("ci_platform_manager.cli.WikiHandler")
+    @patch("projctl.cli.WikiHandler")
     def test_cmd_wiki_create(self, mock_handler_cls: object, tmp_path: Path) -> None:
         """wiki create reads the content file and delegates to handler.create_page."""
-        from ci_platform_manager.cli import cmd_wiki
+        from projctl.cli import cmd_wiki
 
         content_file = tmp_path / "page.md"
         content_file.write_text("# Hello")
@@ -392,10 +392,10 @@ class TestCmdWiki:
             title="My Page", content="# Hello", dry_run=False
         )
 
-    @patch("ci_platform_manager.cli.WikiHandler")
+    @patch("projctl.cli.WikiHandler")
     def test_cmd_wiki_create_missing_file(self, mock_handler_cls: object, tmp_path: Path) -> None:
         """wiki create returns 1 when the content file does not exist."""
-        from ci_platform_manager.cli import cmd_wiki
+        from projctl.cli import cmd_wiki
 
         args = self._make_args(
             "create",
@@ -408,10 +408,10 @@ class TestCmdWiki:
         assert result == 1
         mock_handler_cls.return_value.create_page.assert_not_called()
 
-    @patch("ci_platform_manager.cli.WikiHandler")
+    @patch("projctl.cli.WikiHandler")
     def test_cmd_wiki_update(self, mock_handler_cls: object, tmp_path: Path) -> None:
         """wiki update reads the content file and delegates to handler.update_page."""
-        from ci_platform_manager.cli import cmd_wiki
+        from projctl.cli import cmd_wiki
 
         content_file = tmp_path / "updated.md"
         content_file.write_text("# Updated")
@@ -424,10 +424,10 @@ class TestCmdWiki:
             slug="home", content="# Updated", dry_run=True
         )
 
-    @patch("ci_platform_manager.cli.WikiHandler")
+    @patch("projctl.cli.WikiHandler")
     def test_cmd_wiki_update_missing_file(self, mock_handler_cls: object, tmp_path: Path) -> None:
         """wiki update returns 1 when the content file does not exist."""
-        from ci_platform_manager.cli import cmd_wiki
+        from projctl.cli import cmd_wiki
 
         args = self._make_args(
             "update",
@@ -440,10 +440,10 @@ class TestCmdWiki:
         assert result == 1
         mock_handler_cls.return_value.update_page.assert_not_called()
 
-    @patch("ci_platform_manager.cli.WikiHandler")
+    @patch("projctl.cli.WikiHandler")
     def test_cmd_wiki_platform_error_returns_1(self, mock_handler_cls: object) -> None:
         """PlatformError from handler is caught and returns exit code 1."""
-        from ci_platform_manager.cli import cmd_wiki
+        from projctl.cli import cmd_wiki
 
         mock_handler_cls.side_effect = PlatformError("no remote")
 

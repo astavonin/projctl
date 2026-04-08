@@ -1,4 +1,4 @@
-"""Tests for ci_platform_manager.handlers.search module."""
+"""Tests for projctl.handlers.search module."""
 
 import json
 import subprocess
@@ -7,9 +7,9 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from ci_platform_manager.config import Config
-from ci_platform_manager.exceptions import PlatformError
-from ci_platform_manager.handlers.search import SearchHandler
+from projctl.config import Config
+from projctl.exceptions import PlatformError
+from projctl.handlers.search import SearchHandler
 
 
 class TestSearchHandlerInit:

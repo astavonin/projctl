@@ -1,4 +1,4 @@
-"""Tests for dependency handling in ci_platform_manager.handlers.creator module."""
+"""Tests for dependency handling in projctl.handlers.creator module."""
 
 import subprocess
 from pathlib import Path
@@ -7,9 +7,9 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from ci_platform_manager.config import Config
-from ci_platform_manager.exceptions import PlatformError
-from ci_platform_manager.handlers.creator import EpicIssueCreator
+from projctl.config import Config
+from projctl.exceptions import PlatformError
+from projctl.handlers.creator import EpicIssueCreator
 
 
 class TestParseDependencyReference:
@@ -117,7 +117,7 @@ class TestParseDependencyReference:
 class TestGetProjectIdForValidation:
     """Test project ID extraction for validation."""
 
-    @patch("ci_platform_manager.utils.git_helpers.subprocess.run")
+    @patch("projctl.utils.git_helpers.subprocess.run")
     def test_get_project_id_gitlab_url(self, mock_run: Mock, new_config_path: Path) -> None:
         """Test extraction from GitLab URL."""
         config = Config(new_config_path)
@@ -135,7 +135,7 @@ class TestGetProjectIdForValidation:
         call_args = mock_run.call_args[0][0]
         assert call_args == ["git", "remote", "get-url", "origin"]
 
-    @patch("ci_platform_manager.utils.git_helpers.subprocess.run")
+    @patch("projctl.utils.git_helpers.subprocess.run")
     def test_get_project_id_github_url(self, mock_run: Mock, new_config_path: Path) -> None:
         """Test extraction from GitHub URL."""
         config = Config(new_config_path)
@@ -150,7 +150,7 @@ class TestGetProjectIdForValidation:
 
         assert project_id == "namespace/project"
 
-    @patch("ci_platform_manager.utils.git_helpers.subprocess.run")
+    @patch("projctl.utils.git_helpers.subprocess.run")
     def test_get_project_id_with_trailing_slash(
         self, mock_run: Mock, new_config_path: Path
     ) -> None:
@@ -167,7 +167,7 @@ class TestGetProjectIdForValidation:
 
         assert project_id == "namespace/project"
 
-    @patch("ci_platform_manager.utils.git_helpers.subprocess.run")
+    @patch("projctl.utils.git_helpers.subprocess.run")
     def test_get_project_id_ssh_format(self, mock_run: Mock, new_config_path: Path) -> None:
         """Test extraction from SSH format URL."""
         config = Config(new_config_path)
@@ -182,7 +182,7 @@ class TestGetProjectIdForValidation:
 
         assert project_id == "namespace/project"
 
-    @patch("ci_platform_manager.utils.git_helpers.subprocess.run")
+    @patch("projctl.utils.git_helpers.subprocess.run")
     def test_get_project_id_not_in_git_repo(self, mock_run: Mock, new_config_path: Path) -> None:
         """Test when not in a git repository."""
         config = Config(new_config_path)

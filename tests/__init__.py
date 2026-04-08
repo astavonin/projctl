@@ -1,1 +1,1 @@
-"""Tests for ci_platform_manager package."""
+"""Tests for projctl package."""

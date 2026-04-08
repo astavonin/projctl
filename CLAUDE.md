@@ -2,30 +2,30 @@
 
 Multi-platform CI automation tool for GitLab/GitHub workflow management.
 
-**Repo:** `~/projects/ci-platform-manager`
+**Repo:** `~/projects/projctl`
 
 ## Quick Start
 
 ```bash
 # Install
-pipx install git+https://github.com/astavonin/ci-platform-manager.git
+pipx install git+https://github.com/astavonin/projctl.git
 
 # Development (editable)
-pipx install -e ~/projects/ci-platform-manager
+pipx install -e ~/projects/projctl
 
 # Basic usage
-ci-platform-manager --help
+projctl --help
 
 # Planning sync (most common)
-ci-platform-manager sync push
-ci-platform-manager sync pull --dry-run
+projctl sync push
+projctl sync pull --dry-run
 ```
 
 ## Architecture
 
 **Package Structure:**
 ```
-ci_platform_manager/
+projctl/
 ├── __init__.py
 ├── __main__.py           # Entry point
 ├── cli.py                # CLI interface with command dispatch
@@ -62,7 +62,7 @@ Search order (first found wins):
 1. `--config` flag (explicit path)
 2. `./glab_config.yaml` (project-local, legacy)
 3. `./config.yaml` (project-local, new)
-4. `~/.config/ci_platform_manager/config.yaml` (user-wide)
+4. `~/.config/projctl/config.yaml` (user-wide)
 5. `~/.config/glab_config.yaml` (legacy)
 
 ### Config Structure
@@ -119,9 +119,9 @@ The tool automatically handles legacy `glab_config.yaml` format:
 
 **Create issues from YAML:**
 ```bash
-ci-platform-manager create epic_definition.yaml
-ci-platform-manager create --dry-run epic_definition.yaml
-ci-platform-manager create --config custom_config.yaml epic_definition.yaml
+projctl create epic_definition.yaml
+projctl create --dry-run epic_definition.yaml
+projctl create --config custom_config.yaml epic_definition.yaml
 ```
 
 **YAML Structure for Creating Issues:**
@@ -134,7 +134,7 @@ The YAML file must contain two top-level sections: `epic` and `issues`.
 # ============================================================
 epic:
   # Option 1: Link to existing epic (recommended for adding issues to existing epics)
-  id: 12  # IID of existing epic (use: ci-platform-manager load &12 to verify)
+  id: 12  # IID of existing epic (use: projctl load &12 to verify)
 
   # Option 2: Create new epic
   # title: "Epic Title"  # REQUIRED if creating new epic
@@ -308,7 +308,7 @@ issues:
   - External GitLab IIDs reference issues in the same project
   - External dependencies are validated before issue creation
   - Invalid external references will fail with clear error messages
-  - Use `ci-platform-manager load #13` to verify external issues exist
+  - Use `projctl load #13` to verify external issues exist
 
 **General Important Notes:**
 1. Epic must have EITHER `id` (existing) OR `title` (new)
@@ -321,29 +321,29 @@ issues:
 **Load information:**
 ```bash
 # Issue
-ci-platform-manager load 113
-ci-platform-manager load #113
-ci-platform-manager load https://gitlab.com/group/project/-/issues/113
+projctl load 113
+projctl load #113
+projctl load https://gitlab.com/group/project/-/issues/113
 
 # Epic
-ci-platform-manager load &21
-ci-platform-manager load 21 --type epic
+projctl load &21
+projctl load 21 --type epic
 
 # Milestone
-ci-platform-manager load %123
-ci-platform-manager load 123 --type milestone
+projctl load %123
+projctl load 123 --type milestone
 
 # Merge Request
-ci-platform-manager load !134
-ci-platform-manager load 134 --type mr
+projctl load !134
+projctl load 134 --type mr
 ```
 
 **Search:**
 ```bash
-ci-platform-manager search issues "streaming"
-ci-platform-manager search issues "bug" --state opened --limit 10
-ci-platform-manager search epics "video"
-ci-platform-manager search milestones "v1.0" --state active
+projctl search issues "streaming"
+projctl search issues "bug" --state opened --limit 10
+projctl search epics "video"
+projctl search milestones "v1.0" --state active
 ```
 
 ### Update Resources
@@ -351,43 +351,43 @@ ci-platform-manager search milestones "v1.0" --state active
 **Update issues, MRs, epics, and milestones:**
 ```bash
 # Update issue title
-ci-platform-manager update issue 231 --title "New title"
+projctl update issue 231 --title "New title"
 
 # Update issue description
-ci-platform-manager update issue 231 --description "New description"
+projctl update issue 231 --description "New description"
 
 # Add and remove labels (repeatable flag)
-ci-platform-manager update issue 231 --add-label "type::fix" --remove-label "type::feature"
+projctl update issue 231 --add-label "type::fix" --remove-label "type::feature"
 
 # Assign to a user (username — resolved to numeric ID automatically)
-ci-platform-manager update issue 231 --assignee alice
+projctl update issue 231 --assignee alice
 
 # Set milestone (title or iid — resolved to numeric ID automatically)
-ci-platform-manager update issue 231 --milestone "v2.0"
+projctl update issue 231 --milestone "v2.0"
 
 # Change state (issue/MR/epic)
-ci-platform-manager update issue 231 --state close
-ci-platform-manager update issue 231 --state reopen
+projctl update issue 231 --state close
+projctl update issue 231 --state reopen
 
 # Update MR: title, assignee, reviewer, target branch
-ci-platform-manager update mr 144 --title "New title" --reviewer bob --target-branch main
+projctl update mr 144 --title "New title" --reviewer bob --target-branch main
 
 # Update epic title and state
-ci-platform-manager update epic 37 --title "New epic title" --state close
+projctl update epic 37 --title "New epic title" --state close
 
 # Update milestone due date and activate it
-ci-platform-manager update milestone 10 --due-date 2026-04-01 --state activate
+projctl update milestone 10 --due-date 2026-04-01 --state activate
 
 # Preview without executing (safe — no API calls at all)
-ci-platform-manager update issue 231 --dry-run --title "Preview" --add-label "type::fix"
+projctl update issue 231 --dry-run --title "Preview" --add-label "type::fix"
 ```
 
 **Reference formats (same as `load`):**
 ```bash
-ci-platform-manager update issue 231 ...           # numeric IID
-ci-platform-manager update issue "#231" ...        # prefixed IID
-ci-platform-manager update mr "!144" ...           # MR prefixed format
-ci-platform-manager update mr https://gitlab.com/group/repo/-/merge_requests/144 ...  # full URL
+projctl update issue 231 ...           # numeric IID
+projctl update issue "#231" ...        # prefixed IID
+projctl update mr "!144" ...           # MR prefixed format
+projctl update mr https://gitlab.com/group/repo/-/merge_requests/144 ...  # full URL
 ```
 
 **Flag reference:**
@@ -425,17 +425,17 @@ ci-platform-manager update mr https://gitlab.com/group/repo/-/merge_requests/144
 
 **Post review comments:**
 ```bash
-ci-platform-manager comment planning/reviews/MR134-review.yaml
-ci-platform-manager comment review.yaml --mr 134
-ci-platform-manager comment review.yaml --dry-run
+projctl comment planning/reviews/MR134-review.yaml
+projctl comment review.yaml --mr 134
+projctl comment review.yaml --dry-run
 ```
 
 **Create merge request:**
 ```bash
-ci-platform-manager create-mr --title "Add feature X" --draft
-ci-platform-manager create-mr --fill --reviewer alice --label "type::feature"
-ci-platform-manager create-mr --target-branch develop --milestone "v2.0"
-ci-platform-manager create-mr --dry-run
+projctl create-mr --title "Add feature X" --draft
+projctl create-mr --fill --reviewer alice --label "type::feature"
+projctl create-mr --target-branch develop --milestone "v2.0"
+projctl create-mr --dry-run
 ```
 
 ### Planning Folder Synchronization
@@ -443,12 +443,12 @@ ci-platform-manager create-mr --dry-run
 **Sync commands:**
 ```bash
 # Push local planning → Google Drive
-ci-platform-manager sync push
-ci-platform-manager sync push --dry-run
+projctl sync push
+projctl sync push --dry-run
 
 # Pull Google Drive → local planning
-ci-platform-manager sync pull
-ci-platform-manager sync pull --dry-run
+projctl sync pull
+projctl sync pull --dry-run
 ```
 
 ## Planning Sync Deep Dive
@@ -506,8 +506,8 @@ ${GDRIVE_BASE}/backup/planning/
 3. Pull existing planning folder:
    ```bash
    cd ~/projects/genai-automations
-   ci-platform-manager sync pull --dry-run  # Preview
-   ci-platform-manager sync pull            # Execute
+   projctl sync pull --dry-run  # Preview
+   projctl sync pull            # Execute
    ```
 
 **Repeat for each repository with planning folder**
@@ -518,16 +518,16 @@ ${GDRIVE_BASE}/backup/planning/
 ```bash
 cd ~/projects/genai-automations
 # Work on planning docs...
-ci-platform-manager sync push
+projctl sync push
 # Google Drive auto-syncs to cloud (usually within seconds)
 ```
 
 **Machine B (before starting work):**
 ```bash
 cd ~/projects/genai-automations
-ci-platform-manager sync pull   # Get latest changes
+projctl sync pull   # Get latest changes
 # Work on planning docs...
-ci-platform-manager sync push   # Push changes back
+projctl sync push   # Push changes back
 ```
 
 **Best Practices:**
@@ -616,7 +616,7 @@ pytest tests/
 pytest tests/test_config.py -v
 
 # Run with coverage
-pytest --cov=ci_platform_manager --cov-report=term-missing
+pytest --cov=projctl --cov-report=term-missing
 
 # Run specific test
 pytest tests/test_config.py::TestConfig::test_planning_sync_config -v
@@ -628,17 +628,17 @@ All linters installed in `.venv/bin/`:
 
 ```bash
 # Pylint (code quality)
-pylint ci_platform_manager/ --rcfile=pyproject.toml
+pylint projctl/ --rcfile=pyproject.toml
 
 # Flake8 (style)
-flake8 ci_platform_manager/ --max-line-length=120
+flake8 projctl/ --max-line-length=120
 
 # Mypy (type checking)
-mypy ci_platform_manager/ --config-file=pyproject.toml
+mypy projctl/ --config-file=pyproject.toml
 
 # Black (formatting)
-black ci_platform_manager/ --check
-black ci_platform_manager/  # Apply formatting
+black projctl/ --check
+black projctl/  # Apply formatting
 ```
 
 **Project Standards:**
@@ -651,7 +651,7 @@ black ci_platform_manager/  # Apply formatting
 
 **Pattern to follow:**
 
-1. Create handler file: `ci_platform_manager/handlers/new_handler.py`
+1. Create handler file: `projctl/handlers/new_handler.py`
 
 2. Implement handler class:
    ```python
@@ -670,7 +670,7 @@ black ci_platform_manager/  # Apply formatting
            # Implementation
    ```
 
-3. Add to CLI: `ci_platform_manager/cli.py`
+3. Add to CLI: `projctl/cli.py`
    ```python
    from .handlers.new_handler import NewHandler
 
@@ -713,10 +713,10 @@ black ci_platform_manager/  # Apply formatting
 
 ```bash
 # Standard
-pipx install git+https://github.com/astavonin/ci-platform-manager.git
+pipx install git+https://github.com/astavonin/projctl.git
 
 # Development (editable)
-pipx install -e ~/projects/ci-platform-manager
+pipx install -e ~/projects/projctl
 make install  # sets up .venv with dev deps
 ```
 
@@ -766,12 +766,12 @@ default_epic labels are NOT required for loading epics (only for creating them).
 
 **Issue: Command not found**
 ```
-Solution: Install package: pip install -e . or use python3 -m ci_platform_manager
+Solution: Install package: pip install -e . or use python3 -m projctl
 ```
 
 **Issue: Import errors**
 ```
-Solution: Ensure in correct directory, reinstall: pipx install -e ~/projects/ci-platform-manager
+Solution: Ensure in correct directory, reinstall: pipx install -e ~/projects/projctl
 ```
 
 ## Additional Resources

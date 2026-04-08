@@ -1,8 +1,8 @@
-"""Tests for ci_platform_manager.exceptions module."""
+"""Tests for projctl.exceptions module."""
 
 import pytest
 
-from ci_platform_manager.exceptions import PlatformError
+from projctl.exceptions import PlatformError
 
 
 class TestPlatformError:

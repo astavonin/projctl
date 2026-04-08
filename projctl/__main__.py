@@ -1,4 +1,4 @@
-"""Entry point for python -m ci_platform_manager."""
+"""Entry point for python -m projctl."""
 
 import sys
 from .cli import main

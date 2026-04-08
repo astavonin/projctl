@@ -2,7 +2,7 @@
 """Phase 1 Modularization Script
 
 This script performs automatic modularization of the monolithic glab_tasks_management.py
-into the ci_platform_manager package structure as specified in the refactoring design.
+into the projctl package structure as specified in the refactoring design.
 
 This is a PURE REFACTORING with ZERO behavior changes.
 """
@@ -68,7 +68,7 @@ def main():
         source_content = f.read()
         source_lines = source_content.splitlines(keepends=True)
 
-    base_dir = Path(__file__).parent.parent / 'ci_platform_manager'
+    base_dir = Path(__file__).parent.parent / 'projctl'
 
     print("Phase 1: CI Platform Manager Modularization")
     print("=" * 60)
