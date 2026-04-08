@@ -24,16 +24,16 @@ help:
 	@echo "First time setup:"
 	@echo "  make venv && make install"
 
-# Check if venv exists, create if not
-$(VENV)/bin/activate:
+# Check if venv exists and is functional, recreate if not
+$(VENV)/bin/pip:
 	@echo "Creating virtual environment..."
 	python3 -m venv $(VENV)
 	@echo "Virtual environment created at $(VENV)"
 
-venv: $(VENV)/bin/activate
+venv: $(VENV)/bin/pip
 
 # Install package and dependencies in venv
-install: venv
+install: $(VENV)/bin/pip
 	@echo "Installing package with dev dependencies..."
 	$(PIP) install --upgrade pip setuptools wheel
 	$(PIP) install -e ".[dev]"

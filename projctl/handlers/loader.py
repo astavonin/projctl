@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import urllib.parse
 from typing import Any, Dict, List, Optional
 
@@ -221,8 +222,15 @@ class TicketLoader:
         """
         issue_data = self._fetch_issue(issue_ref, project)
 
+        timing: Dict[str, Any] = {}
+        project_id = issue_data.get("project_id")
+        issue_iid = issue_data.get("iid")
+        if project_id and issue_iid:
+            history = self._get_status_history(project_id, issue_iid)
+            timing = self._compute_timing(history)
+
         # Print formatted issue info immediately for interactive use.
-        self.print_ticket_info({"issue": issue_data, "epic": None, "links": None})
+        self.print_ticket_info({"issue": issue_data, "epic": None, "links": None, "timing": timing})
 
         return issue_data  # type: ignore[no-any-return]
 
@@ -358,8 +366,17 @@ class TicketLoader:
         # Load epic data
         epic_data = self._fetch_epic(final_group_path, int(epic_iid))
 
-        # Load epic issues
-        issues = self.load_epic_issues(final_group_path, int(epic_iid))
+        # Load epic issues and enrich each with its status timing.
+        raw_issues = self.load_epic_issues(final_group_path, int(epic_iid))
+        issues = []
+        for issue in raw_issues:
+            project_id = issue.get("project_id")
+            issue_iid = issue.get("iid")
+            timing: Dict[str, Any] = {}
+            if project_id and issue_iid:
+                history = self._get_status_history(project_id, issue_iid)
+                timing = self._compute_timing(history)
+            issues.append({**issue, "timing": timing})
 
         return {"epic": epic_data, "issues": issues}
 
@@ -546,10 +563,18 @@ class TicketLoader:
         # Use _fetch_issue to avoid printing here; print_ticket_info is called by the caller.
         issue_data = self._fetch_issue(issue_ref)
 
+        timing: Dict[str, Any] = {}
+        project_id = issue_data.get("project_id")
+        issue_iid_val = issue_data.get("iid")
+        if project_id and issue_iid_val:
+            history = self._get_status_history(project_id, issue_iid_val)
+            timing = self._compute_timing(history)
+
         result: Dict[str, Any] = {
             "issue": issue_data,
             "epic": None,
             "links": {"blocking": [], "blocked_by": []},
+            "timing": timing,
         }
 
         # Check if issue has an associated epic
@@ -587,19 +612,132 @@ class TicketLoader:
         issue = data["issue"]
         epic = data.get("epic")
         links = data.get("links")
-        self._print_markdown(issue, epic, links)
+        timing = data.get("timing", {})
+        self._print_markdown(issue, epic, links, timing)
+
+    # Status values that mean the issue was rejected and no work should be counted.
+    _REJECTED_STATUSES: frozenset = frozenset({"duplicate", "won't do", "wouldn't do"})
+    _IN_PROGRESS_STATUS = "in progress"
+    _DONE_STATUS = "done"
+
+    def _get_status_history(self, project_id: int, issue_iid: int) -> List[Dict[str, str]]:
+        """Return chronological list of status transitions from issue system notes.
+
+        Each entry has 'status' (raw value from GitLab) and 'timestamp' (ISO 8601 string).
+        GitLab returns notes newest-first; this method reverses them so callers get
+        oldest-first ordering, which makes timeline reasoning straightforward.
+
+        Args:
+            project_id: GitLab project ID (numeric).
+            issue_iid: Issue IID within the project.
+
+        Returns:
+            List of {'status': str, 'timestamp': str} dicts, oldest first.
+            Empty list if notes cannot be fetched or no status transitions exist.
+        """
+        api_endpoint = f"projects/{project_id}/issues/{issue_iid}/notes"
+        pattern = re.compile(r"set status to \*\*(.+?)\*\*", re.IGNORECASE)
+
+        try:
+            output = self._run_glab_command(["api", api_endpoint])
+            notes = json.loads(output) if output else []
+        except (PlatformError, json.JSONDecodeError) as err:
+            logger.warning("Failed to fetch status history for issue %s: %s", issue_iid, err)
+            return []
+
+        history = []
+        for note in notes:
+            if not note.get("system"):
+                continue
+            match = pattern.search(note.get("body", ""))
+            if match:
+                history.append({"status": match.group(1), "timestamp": note.get("created_at", "")})
+
+        # Notes arrive newest-first; reverse so callers see oldest-first.
+        history.reverse()
+        return history
+
+    def _compute_timing(self, history: List[Dict[str, str]]) -> Dict[str, Any]:
+        """Derive issue timing from a chronological status history.
+
+        Rules:
+        - start_date: timestamp of the first "In progress" transition, or None if
+          the issue moved directly from "To do" to "Done" without an in-progress step.
+        - end_date: timestamp of the last "Done" transition, or None.
+        - is_rejected: True when the final status is "Duplicate" or "Won't do".
+          Rejected issues have neither start_date nor end_date (no work counted).
+        - current_status: the most recent status string, or None if no history.
+
+        Args:
+            history: Chronological list from _get_status_history (oldest first).
+
+        Returns:
+            Dict with keys: current_status, start_date, end_date, is_rejected.
+        """
+        if not history:
+            return {
+                "current_status": None,
+                "start_date": None,
+                "end_date": None,
+                "is_rejected": False,
+            }
+
+        current_status = history[-1]["status"]
+        is_rejected = current_status.lower() in self._REJECTED_STATUSES
+
+        if is_rejected:
+            return {
+                "current_status": current_status,
+                "start_date": None,
+                "end_date": None,
+                "is_rejected": True,
+            }
+
+        start_date: Optional[str] = None
+        end_date: Optional[str] = None
+
+        for entry in history:
+            status_lower = entry["status"].lower()
+            if start_date is None and status_lower == self._IN_PROGRESS_STATUS:
+                start_date = entry["timestamp"]
+            if status_lower == self._DONE_STATUS:
+                # Keep updating so we capture the *last* Done transition.
+                end_date = entry["timestamp"]
+
+        return {
+            "current_status": current_status,
+            "start_date": start_date,
+            "end_date": end_date,
+            "is_rejected": False,
+        }
 
     def _print_markdown(
         self,
         issue: Dict[str, Any],
         epic: Optional[Dict[str, Any]],
         links: Optional[Dict[str, List[Dict]]] = None,
+        timing: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Print ticket info in markdown format."""
         print(f"# Issue #{issue.get('iid')}: {issue.get('title')}\n")
 
         print(f"**URL:** {issue.get('web_url')}  ")
         print(f"**State:** {issue.get('state')}  ")
+
+        if timing:
+            current_status = timing.get("current_status")
+            if current_status:
+                print(f"**Status:** {current_status}  ")
+            if timing.get("is_rejected"):
+                print("**Time counted:** No (rejected)  ")
+            else:
+                start = timing.get("start_date")
+                end = timing.get("end_date")
+                if start:
+                    print(f"**Started:** {start}  ")
+                if end:
+                    print(f"**Completed:** {end}  ")
+
         print(f"**Author:** {issue.get('author', {}).get('name', 'Unknown')}  ")
 
         labels = issue.get("labels", [])
@@ -661,9 +799,55 @@ class TicketLoader:
         """
         epic = data["epic"]
         issues = data.get("issues", [])
-        self._print_epic_markdown(epic, issues)
+        derived_dates = self._derive_epic_dates(issues)
+        self._print_epic_markdown(epic, issues, derived_dates)
 
-    def _print_epic_markdown(self, epic: Dict[str, Any], issues: List[Dict[str, Any]]) -> None:
+    @staticmethod
+    def _derive_epic_dates(
+        issues: List[Dict[str, Any]],
+    ) -> Dict[str, Optional[str]]:
+        """Derive epic start and end dates purely from issue status flows.
+
+        Only non-rejected issues contribute. Start is the earliest first-"In progress"
+        timestamp; end is the latest last-"Done" timestamp, or None if any contributing
+        issue has not yet reached "Done".
+
+        Args:
+            issues: Issues enriched with a 'timing' dict from _compute_timing.
+
+        Returns:
+            Dict with 'start_date' and 'end_date', either an ISO timestamp or None.
+        """
+        start_timestamps: List[str] = []
+        end_timestamps: List[str] = []
+        any_unfinished = False
+
+        for issue in issues:
+            timing = issue.get("timing", {})
+            if timing.get("is_rejected"):
+                continue
+            start = timing.get("start_date")
+            end = timing.get("end_date")
+            if start:
+                start_timestamps.append(start)
+            if end:
+                end_timestamps.append(end)
+            else:
+                any_unfinished = True
+
+        return {
+            "start_date": min(start_timestamps) if start_timestamps else None,
+            "end_date": (
+                None if any_unfinished else (max(end_timestamps) if end_timestamps else None)
+            ),
+        }
+
+    def _print_epic_markdown(
+        self,
+        epic: Dict[str, Any],
+        issues: List[Dict[str, Any]],
+        derived_dates: Optional[Dict[str, Optional[str]]] = None,
+    ) -> None:
         """Print epic info in markdown format."""
         print(f"# Epic &{epic.get('iid')}: {epic.get('title')}\n")
 
@@ -678,11 +862,13 @@ class TicketLoader:
             ]
             print(f"**Labels:** {', '.join([f'`{label}`' for label in label_names])}  ")
 
-        if epic.get("start_date"):
-            print(f"**Start Date:** {epic['start_date']}  ")
-
-        if epic.get("due_date"):
-            print(f"**Due Date:** {epic['due_date']}  ")
+        if derived_dates:
+            start = derived_dates.get("start_date")
+            end = derived_dates.get("end_date")
+            if start:
+                print(f"**Started:** {start}  ")
+            if end:
+                print(f"**Completed:** {end}  ")
 
         print(f"\n**Created:** {epic.get('created_at')}  ")
         print(f"**Updated:** {epic.get('updated_at')}  ")
