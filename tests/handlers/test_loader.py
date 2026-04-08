@@ -9,7 +9,7 @@ import pytest
 
 from projctl.config import Config
 from projctl.exceptions import PlatformError
-from projctl.handlers.loader import TicketLoader
+from projctl.handlers.loader import TicketLoader, _format_user, _format_users
 
 
 class TestTicketLoaderInit:
@@ -181,10 +181,13 @@ class TestLoadEpic:
         config = Config(new_config_path)
         loader = TicketLoader(config)
 
-        # First call for epic data, second for issues
+        graphql_no_assignees = json.dumps(
+            {"data": {"group": {"workItem": {"widgets": [{"type": "ASSIGNEES", "assignees": {"nodes": []}}]}}}}
+        )
+        # Call order: REST epic data, GraphQL assignees
         mock_run.side_effect = [
             Mock(stdout=mock_glab_epic_view, returncode=0),
-            Mock(stdout="[]", returncode=0),  # Empty issues list
+            Mock(stdout=graphql_no_assignees, returncode=0),
         ]
 
         result = loader.load_epic("&21")
@@ -293,3 +296,240 @@ class TestFormatting:
         captured = capsys.readouterr()
         # Check metadata is included
         assert "State:" in captured.out or "Labels:" in captured.out
+
+
+class TestFormatUser:
+    """Test _format_user and _format_users helpers."""
+
+    def test_format_user_with_name_and_username(self) -> None:
+        """Full user dict renders as 'Name (@username)'."""
+        user = {"name": "Alex Stavonin", "username": "alex.stavonin"}
+        assert _format_user(user) == "Alex Stavonin (@alex.stavonin)"
+
+    def test_format_user_username_only(self) -> None:
+        """User with no name falls back to username."""
+        user = {"username": "alex.stavonin"}
+        assert _format_user(user) == "alex.stavonin (@alex.stavonin)"
+
+    def test_format_user_empty_dict(self) -> None:
+        """Empty dict returns '?'."""
+        assert _format_user({}) == "?"
+
+    def test_format_users_multiple(self) -> None:
+        """Multiple users are comma-separated."""
+        users = [
+            {"name": "Alice", "username": "alice"},
+            {"name": "Bob", "username": "bob"},
+        ]
+        assert _format_users(users) == "Alice (@alice), Bob (@bob)"
+
+    def test_format_users_empty(self) -> None:
+        """Empty list returns empty string."""
+        assert _format_users([]) == ""
+
+
+class TestGetStatusHistory:
+    """Test _get_status_history."""
+
+    def test_returns_chronological_order(self, new_config_path: Path) -> None:
+        """Notes are reversed from newest-first to oldest-first."""
+        notes = [
+            {"system": True, "body": "set status to **Done**", "created_at": "2026-03-25T10:00:00Z"},
+            {"system": True, "body": "set status to **In progress**", "created_at": "2026-03-10T08:00:00Z"},
+            {"system": True, "body": "set status to **To do**", "created_at": "2026-03-01T09:00:00Z"},
+        ]
+        config = Config(new_config_path)
+        loader = TicketLoader(config)
+
+        with patch.object(loader, "_run_glab_command", return_value=json.dumps(notes)):
+            history = loader._get_status_history(1403, 22)
+
+        assert [h["status"] for h in history] == ["To do", "In progress", "Done"]
+        assert history[0]["timestamp"] == "2026-03-01T09:00:00Z"
+
+    def test_ignores_non_system_notes(self, new_config_path: Path) -> None:
+        """Non-system notes are skipped."""
+        notes = [
+            {"system": False, "body": "set status to **Done**", "created_at": "2026-03-25T10:00:00Z"},
+            {"system": True, "body": "set status to **In progress**", "created_at": "2026-03-10T08:00:00Z"},
+        ]
+        config = Config(new_config_path)
+        loader = TicketLoader(config)
+
+        with patch.object(loader, "_run_glab_command", return_value=json.dumps(notes)):
+            history = loader._get_status_history(1403, 22)
+
+        assert len(history) == 1
+        assert history[0]["status"] == "In progress"
+
+    def test_returns_empty_on_error(self, new_config_path: Path) -> None:
+        """PlatformError returns empty list without raising."""
+        config = Config(new_config_path)
+        loader = TicketLoader(config)
+
+        with patch.object(loader, "_run_glab_command", side_effect=PlatformError("fail")):
+            history = loader._get_status_history(1403, 22)
+
+        assert history == []
+
+
+class TestComputeTiming:
+    """Test _compute_timing."""
+
+    def test_in_progress_then_done(self, new_config_path: Path) -> None:
+        """Normal flow: To do → In progress → Done."""
+        history = [
+            {"status": "To do", "timestamp": "2026-03-01T09:00:00Z"},
+            {"status": "In progress", "timestamp": "2026-03-10T08:00:00Z"},
+            {"status": "Done", "timestamp": "2026-03-25T10:00:00Z"},
+        ]
+        loader = TicketLoader(Config(new_config_path))
+        result = loader._compute_timing(history)
+
+        assert result["current_status"] == "Done"
+        assert result["start_date"] == "2026-03-10T08:00:00Z"
+        assert result["end_date"] == "2026-03-25T10:00:00Z"
+        assert result["is_rejected"] is False
+
+    def test_todo_to_done_no_in_progress(self, new_config_path: Path) -> None:
+        """To do → Done directly: start_date is None, end_date is set."""
+        history = [
+            {"status": "To do", "timestamp": "2026-03-01T09:00:00Z"},
+            {"status": "Done", "timestamp": "2026-03-25T10:00:00Z"},
+        ]
+        loader = TicketLoader(Config(new_config_path))
+        result = loader._compute_timing(history)
+
+        assert result["current_status"] == "Done"
+        assert result["start_date"] is None
+        assert result["end_date"] == "2026-03-25T10:00:00Z"
+        assert result["is_rejected"] is False
+
+    def test_duplicate_is_rejected(self, new_config_path: Path) -> None:
+        """Duplicate status: no dates, is_rejected True."""
+        history = [
+            {"status": "To do", "timestamp": "2026-03-01T09:00:00Z"},
+            {"status": "Duplicate", "timestamp": "2026-03-30T08:00:00Z"},
+        ]
+        loader = TicketLoader(Config(new_config_path))
+        result = loader._compute_timing(history)
+
+        assert result["current_status"] == "Duplicate"
+        assert result["start_date"] is None
+        assert result["end_date"] is None
+        assert result["is_rejected"] is True
+
+    def test_wont_do_is_rejected(self, new_config_path: Path) -> None:
+        """Won't do status: no dates, is_rejected True."""
+        history = [
+            {"status": "To do", "timestamp": "2026-03-01T09:00:00Z"},
+            {"status": "Won't do", "timestamp": "2026-04-01T08:00:00Z"},
+        ]
+        loader = TicketLoader(Config(new_config_path))
+        result = loader._compute_timing(history)
+
+        assert result["is_rejected"] is True
+        assert result["start_date"] is None
+        assert result["end_date"] is None
+
+    def test_cycled_back_uses_first_in_progress_and_last_done(self, new_config_path: Path) -> None:
+        """To do → In progress → To do → In progress → Done: first start, last end."""
+        history = [
+            {"status": "To do", "timestamp": "2026-03-01T09:00:00Z"},
+            {"status": "In progress", "timestamp": "2026-03-10T08:00:00Z"},
+            {"status": "To do", "timestamp": "2026-03-15T09:00:00Z"},
+            {"status": "In progress", "timestamp": "2026-03-17T08:00:00Z"},
+            {"status": "Done", "timestamp": "2026-03-25T10:00:00Z"},
+        ]
+        loader = TicketLoader(Config(new_config_path))
+        result = loader._compute_timing(history)
+
+        assert result["start_date"] == "2026-03-10T08:00:00Z"
+        assert result["end_date"] == "2026-03-25T10:00:00Z"
+
+    def test_empty_history(self, new_config_path: Path) -> None:
+        """Empty history returns all None fields."""
+        loader = TicketLoader(Config(new_config_path))
+        result = loader._compute_timing([])
+
+        assert result["current_status"] is None
+        assert result["start_date"] is None
+        assert result["end_date"] is None
+        assert result["is_rejected"] is False
+
+
+class TestDeriveEpicDates:
+    """Test _derive_epic_dates."""
+
+    def test_all_done_with_in_progress(self) -> None:
+        """All non-rejected issues done: returns earliest start, latest end."""
+        issues = [
+            {"timing": {"is_rejected": False, "start_date": "2026-03-10T08:00:00Z", "end_date": "2026-03-20T10:00:00Z"}},
+            {"timing": {"is_rejected": False, "start_date": "2026-03-05T09:00:00Z", "end_date": "2026-03-25T10:00:00Z"}},
+        ]
+        result = TicketLoader._derive_epic_dates(issues)
+
+        assert result["start_date"] == "2026-03-05T09:00:00Z"
+        assert result["end_date"] == "2026-03-25T10:00:00Z"
+
+    def test_any_unfinished_clears_end_date(self) -> None:
+        """Any non-rejected issue without end_date → epic end is None."""
+        issues = [
+            {"timing": {"is_rejected": False, "start_date": "2026-03-10T08:00:00Z", "end_date": "2026-03-20T10:00:00Z"}},
+            {"timing": {"is_rejected": False, "start_date": "2026-03-12T08:00:00Z", "end_date": None}},
+        ]
+        result = TicketLoader._derive_epic_dates(issues)
+
+        assert result["start_date"] == "2026-03-10T08:00:00Z"
+        assert result["end_date"] is None
+
+    def test_rejected_issues_excluded(self) -> None:
+        """Rejected issues do not affect dates."""
+        issues = [
+            {"timing": {"is_rejected": True, "start_date": None, "end_date": None}},
+            {"timing": {"is_rejected": False, "start_date": "2026-03-10T08:00:00Z", "end_date": "2026-03-20T10:00:00Z"}},
+        ]
+        result = TicketLoader._derive_epic_dates(issues)
+
+        assert result["start_date"] == "2026-03-10T08:00:00Z"
+        assert result["end_date"] == "2026-03-20T10:00:00Z"
+
+    def test_todo_to_done_no_start(self) -> None:
+        """Issues without start_date (To do → Done) don't contribute to epic start."""
+        issues = [
+            {"timing": {"is_rejected": False, "start_date": None, "end_date": "2026-03-20T10:00:00Z"}},
+            {"timing": {"is_rejected": False, "start_date": "2026-03-10T08:00:00Z", "end_date": "2026-03-25T10:00:00Z"}},
+        ]
+        result = TicketLoader._derive_epic_dates(issues)
+
+        assert result["start_date"] == "2026-03-10T08:00:00Z"
+        assert result["end_date"] == "2026-03-25T10:00:00Z"
+
+    def test_all_issues_no_start_dates(self) -> None:
+        """All issues went To do → Done: epic start is None."""
+        issues = [
+            {"timing": {"is_rejected": False, "start_date": None, "end_date": "2026-03-20T10:00:00Z"}},
+            {"timing": {"is_rejected": False, "start_date": None, "end_date": "2026-03-25T10:00:00Z"}},
+        ]
+        result = TicketLoader._derive_epic_dates(issues)
+
+        assert result["start_date"] is None
+        assert result["end_date"] == "2026-03-25T10:00:00Z"
+
+    def test_empty_issues(self) -> None:
+        """No issues → both dates None."""
+        result = TicketLoader._derive_epic_dates([])
+
+        assert result["start_date"] is None
+        assert result["end_date"] is None
+
+    def test_all_rejected(self) -> None:
+        """All issues rejected → both dates None."""
+        issues = [
+            {"timing": {"is_rejected": True, "start_date": None, "end_date": None}},
+            {"timing": {"is_rejected": True, "start_date": None, "end_date": None}},
+        ]
+        result = TicketLoader._derive_epic_dates(issues)
+
+        assert result["start_date"] is None
+        assert result["end_date"] is None

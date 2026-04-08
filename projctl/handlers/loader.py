@@ -14,6 +14,18 @@ from ..utils.glab_runner import run_glab_command
 logger = logging.getLogger(__name__)
 
 
+def _format_user(user: Dict[str, Any]) -> str:
+    """Format a GitLab user as 'Display Name (@username)'."""
+    name = user.get("name") or user.get("username", "?")
+    username = user.get("username", "")
+    return f"{name} (@{username})" if username else name
+
+
+def _format_users(users: List[Dict[str, Any]]) -> str:
+    """Format a list of GitLab users as a comma-separated string."""
+    return ", ".join(_format_user(u) for u in users)
+
+
 class TicketLoader:
     """Loads GitLab issue and epic information using the glab CLI."""
 
@@ -251,7 +263,37 @@ class TicketLoader:
         api_endpoint = f"groups/{encoded_group}/epics/{epic_iid}"
 
         output = self._run_glab_command(["api", api_endpoint])
-        return json.loads(output)  # type: ignore[no-any-return]
+        epic_data = json.loads(output)
+
+        # Epic assignees are not exposed by the REST API; fetch via GraphQL WorkItem widgets.
+        epic_data["assignees"] = self._fetch_epic_assignees(group_path, epic_iid)
+        return epic_data  # type: ignore[no-any-return]
+
+    def _fetch_epic_assignees(self, group_path: str, epic_iid: int) -> List[Dict[str, str]]:
+        """Fetch epic assignees via GraphQL, which the REST API does not expose.
+
+        Args:
+            group_path: GitLab group full path.
+            epic_iid: Epic IID within the group.
+
+        Returns:
+            List of assignee dicts with 'name' and 'username' keys. Empty if none or on error.
+        """
+        query = (
+            "{ group(fullPath: %s) { workItem(iid: %s) { widgets { type "
+            "... on WorkItemWidgetAssignees { assignees { nodes { name username } } } } } } }"
+            % (json.dumps(group_path), json.dumps(str(epic_iid)))
+        )
+        try:
+            output = self._run_glab_command(["api", "graphql", "-f", f"query={query}"])
+            data = json.loads(output)
+            widgets = data.get("data", {}).get("group", {}).get("workItem", {}).get("widgets", [])
+            for widget in widgets:
+                if widget.get("type") == "ASSIGNEES":
+                    return widget.get("assignees", {}).get("nodes", [])
+        except (PlatformError, json.JSONDecodeError, KeyError, AttributeError) as err:
+            logger.warning("Failed to fetch epic assignees for iid %s: %s", epic_iid, err)
+        return []
 
     def load_epic(self, epic_ref: str) -> Dict[str, Any]:
         """Load epic information from GitLab.
@@ -746,8 +788,7 @@ class TicketLoader:
 
         assignees = issue.get("assignees", [])
         if assignees:
-            names = [a.get("name", a.get("username")) for a in assignees]
-            print(f"**Assignees:** {', '.join(names)}  ")
+            print(f"**Assignees:** {_format_users(assignees)}  ")
 
         if issue.get("milestone"):
             print(f"**Milestone:** {issue['milestone'].get('title')}  ")
@@ -853,7 +894,12 @@ class TicketLoader:
 
         print(f"**URL:** {epic.get('web_url')}  ")
         print(f"**State:** {epic.get('state')}  ")
-        print(f"**Author:** {epic.get('author', {}).get('name', 'Unknown')}  ")
+        assignees = epic.get("assignees") or []
+        if assignees:
+            owner_str = _format_users(assignees)
+        else:
+            owner_str = _format_user(epic.get("author") or {})
+        print(f"**Owner:** {owner_str}  ")
 
         labels = epic.get("labels", [])
         if labels:
@@ -883,6 +929,15 @@ class TicketLoader:
             opened_issues = [i for i in issues if i.get("state") == "opened"]
             closed_issues = [i for i in issues if i.get("state") == "closed"]
 
+            def _assignee_str(issue: Dict[str, Any]) -> str:
+                assignees = issue.get("assignees") or []
+                if assignees:
+                    return _format_users(assignees)
+                single = issue.get("assignee")
+                if single:
+                    return _format_user(single)
+                return "unassigned"
+
             if opened_issues:
                 print(f"### Opened ({len(opened_issues)})\n")
                 for issue in opened_issues:
@@ -898,6 +953,7 @@ class TicketLoader:
                     if len(issue_labels) > 3:
                         label_str += f" *+{len(issue_labels) - 3} more*"
                     print(f"- [#{iid} {title}]({url})")
+                    print(f"  - Owner: {_assignee_str(issue)}")
                     print(f"  - Labels: {label_str}")
                 print()
 
@@ -908,6 +964,7 @@ class TicketLoader:
                     title = issue.get("title", "Untitled")
                     url = issue.get("web_url", "")
                     print(f"- [#{iid} {title}]({url})")
+                    print(f"  - Owner: {_assignee_str(issue)}")
                 print()
 
         print("## Description\n")
@@ -1088,13 +1145,11 @@ class TicketLoader:
 
         assignees = mr.get("assignees", [])
         if assignees:
-            names = [a.get("name", a.get("username")) for a in assignees]
-            print(f"**Assignees:** {', '.join(names)}  ")
+            print(f"**Assignees:** {_format_users(assignees)}  ")
 
         reviewers = mr.get("reviewers", [])
         if reviewers:
-            names = [r.get("name", r.get("username")) for r in reviewers]
-            print(f"**Reviewers:** {', '.join(names)}  ")
+            print(f"**Reviewers:** {_format_users(reviewers)}  ")
 
         if mr.get("milestone"):
             print(f"**Milestone:** {mr['milestone'].get('title')}  ")
