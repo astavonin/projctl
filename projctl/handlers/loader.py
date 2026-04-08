@@ -8,22 +8,15 @@ from typing import Any, Dict, List, Optional
 
 from ..config import Config
 from ..exceptions import PlatformError
+from ..formatters import format_user, format_users, print_epic, print_issue, print_milestone, print_mr
 from ..utils.git_helpers import extract_path_from_url, parse_issue_url
 from ..utils.glab_runner import run_glab_command
 
 logger = logging.getLogger(__name__)
 
-
-def _format_user(user: Dict[str, Any]) -> str:
-    """Format a GitLab user as 'Display Name (@username)'."""
-    name = user.get("name") or user.get("username", "?")
-    username = user.get("username", "")
-    return f"{name} (@{username})" if username else name
-
-
-def _format_users(users: List[Dict[str, Any]]) -> str:
-    """Format a list of GitLab users as a comma-separated string."""
-    return ", ".join(_format_user(u) for u in users)
+# Re-export for backwards compatibility with any external callers.
+_format_user = format_user
+_format_users = format_users
 
 
 class TicketLoader:
@@ -290,7 +283,8 @@ class TicketLoader:
             widgets = data.get("data", {}).get("group", {}).get("workItem", {}).get("widgets", [])
             for widget in widgets:
                 if widget.get("type") == "ASSIGNEES":
-                    return widget.get("assignees", {}).get("nodes", [])
+                    nodes: List[Dict[str, str]] = widget.get("assignees", {}).get("nodes", [])
+                    return nodes
         except (PlatformError, json.JSONDecodeError, KeyError, AttributeError) as err:
             logger.warning("Failed to fetch epic assignees for iid %s: %s", epic_iid, err)
         return []
@@ -651,11 +645,12 @@ class TicketLoader:
         Args:
             data: Dictionary containing issue and epic data.
         """
-        issue = data["issue"]
-        epic = data.get("epic")
-        links = data.get("links")
-        timing = data.get("timing", {})
-        self._print_markdown(issue, epic, links, timing)
+        print_issue(
+            data["issue"],
+            epic=data.get("epic"),
+            links=data.get("links"),
+            timing=data.get("timing", {}),
+        )
 
     # Status values that mean the issue was rejected and no work should be counted.
     _REJECTED_STATUSES: frozenset = frozenset({"duplicate", "won't do", "wouldn't do"})
@@ -753,95 +748,17 @@ class TicketLoader:
             "is_rejected": False,
         }
 
-    def _print_markdown(
-        self,
-        issue: Dict[str, Any],
-        epic: Optional[Dict[str, Any]],
-        links: Optional[Dict[str, List[Dict]]] = None,
-        timing: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """Print ticket info in markdown format."""
-        print(f"# Issue #{issue.get('iid')}: {issue.get('title')}\n")
-
-        print(f"**URL:** {issue.get('web_url')}  ")
-        print(f"**State:** {issue.get('state')}  ")
-
-        if timing:
-            current_status = timing.get("current_status")
-            if current_status:
-                print(f"**Status:** {current_status}  ")
-            if timing.get("is_rejected"):
-                print("**Time counted:** No (rejected)  ")
-            else:
-                start = timing.get("start_date")
-                end = timing.get("end_date")
-                if start:
-                    print(f"**Started:** {start}  ")
-                if end:
-                    print(f"**Completed:** {end}  ")
-
-        print(f"**Author:** {issue.get('author', {}).get('name', 'Unknown')}  ")
-
-        labels = issue.get("labels", [])
-        if labels:
-            print(f"**Labels:** {', '.join([f'`{label}`' for label in labels])}  ")
-
-        assignees = issue.get("assignees", [])
-        if assignees:
-            print(f"**Assignees:** {_format_users(assignees)}  ")
-
-        if issue.get("milestone"):
-            print(f"**Milestone:** {issue['milestone'].get('title')}  ")
-
-        if issue.get("due_date"):
-            print(f"**Due Date:** {issue['due_date']}  ")
-
-        print(f"\n**Created:** {issue.get('created_at')}  ")
-        print(f"**Updated:** {issue.get('updated_at')}  ")
-
-        # Print dependencies
-        if links:
-            blocked_by = links.get("blocked_by", [])
-            blocking = links.get("blocking", [])
-
-            if blocked_by:
-                print("\n### ⛔ Blocked By\n")
-                for link in blocked_by:
-                    link_iid = link.get("iid")
-                    link_title = link.get("title", "Untitled")
-                    link_state = link.get("state", "unknown")
-                    link_url = link.get("web_url", "")
-                    print(f"- [#{link_iid} {link_title}]({link_url}) `[{link_state}]`")
-
-            if blocking:
-                print("\n### 🚧 Blocking\n")
-                for link in blocking:
-                    link_iid = link.get("iid")
-                    link_title = link.get("title", "Untitled")
-                    link_state = link.get("state", "unknown")
-                    link_url = link.get("web_url", "")
-                    print(f"- [#{link_iid} {link_title}]({link_url}) `[{link_state}]`")
-
-        if epic:
-            print(f"\n## Epic &{epic.get('iid')}: {epic.get('title')}\n")
-            print(f"**URL:** {epic.get('web_url')}  ")
-            print(f"**State:** {epic.get('state')}  ")
-
-        print("\n## Description\n")
-        description = issue.get("description", "No description")
-        print(description if description else "*No description*")
-        print()
-
     def print_epic_info(self, data: Dict[str, Any]) -> None:
         """Print epic information in markdown format.
 
         Args:
             data: Dictionary containing epic and issues data.
         """
-        epic = data["epic"]
-        issues = data.get("issues", [])
-        derived_dates = self._derive_epic_dates(issues)
-        self._print_epic_markdown(epic, issues, derived_dates)
+        print_epic(
+            data["epic"],
+            data.get("issues", []),
+            derived_dates=self._derive_epic_dates(data.get("issues", [])),
+        )
 
     @staticmethod
     def _derive_epic_dates(
@@ -883,201 +800,17 @@ class TicketLoader:
             ),
         }
 
-    def _print_epic_markdown(
-        self,
-        epic: Dict[str, Any],
-        issues: List[Dict[str, Any]],
-        derived_dates: Optional[Dict[str, Optional[str]]] = None,
-    ) -> None:
-        """Print epic info in markdown format."""
-        print(f"# Epic &{epic.get('iid')}: {epic.get('title')}\n")
-
-        print(f"**URL:** {epic.get('web_url')}  ")
-        print(f"**State:** {epic.get('state')}  ")
-        assignees = epic.get("assignees") or []
-        if assignees:
-            owner_str = _format_users(assignees)
-        else:
-            owner_str = _format_user(epic.get("author") or {})
-        print(f"**Owner:** {owner_str}  ")
-
-        labels = epic.get("labels", [])
-        if labels:
-            label_names = [
-                label.get("name", label) if isinstance(label, dict) else label for label in labels
-            ]
-            print(f"**Labels:** {', '.join([f'`{label}`' for label in label_names])}  ")
-
-        if derived_dates:
-            start = derived_dates.get("start_date")
-            end = derived_dates.get("end_date")
-            if start:
-                print(f"**Started:** {start}  ")
-            if end:
-                print(f"**Completed:** {end}  ")
-
-        print(f"\n**Created:** {epic.get('created_at')}  ")
-        print(f"**Updated:** {epic.get('updated_at')}  ")
-
-        # Print issues in the epic
-        print(f"\n## Issues in Epic ({len(issues)})\n")
-
-        if not issues:
-            print("*No issues in this epic*\n")
-        else:
-            # Group issues by state
-            opened_issues = [i for i in issues if i.get("state") == "opened"]
-            closed_issues = [i for i in issues if i.get("state") == "closed"]
-
-            def _assignee_str(issue: Dict[str, Any]) -> str:
-                assignees = issue.get("assignees") or []
-                if assignees:
-                    return _format_users(assignees)
-                single = issue.get("assignee")
-                if single:
-                    return _format_user(single)
-                return "unassigned"
-
-            if opened_issues:
-                print(f"### Opened ({len(opened_issues)})\n")
-                for issue in opened_issues:
-                    iid = issue.get("iid")
-                    title = issue.get("title", "Untitled")
-                    url = issue.get("web_url", "")
-                    issue_labels = issue.get("labels", [])
-                    label_str = (
-                        ", ".join([f"`{label}`" for label in issue_labels[:3]])
-                        if issue_labels
-                        else "*none*"
-                    )
-                    if len(issue_labels) > 3:
-                        label_str += f" *+{len(issue_labels) - 3} more*"
-                    print(f"- [#{iid} {title}]({url})")
-                    print(f"  - Owner: {_assignee_str(issue)}")
-                    print(f"  - Labels: {label_str}")
-                print()
-
-            if closed_issues:
-                print(f"### Closed ({len(closed_issues)})\n")
-                for issue in closed_issues:
-                    iid = issue.get("iid")
-                    title = issue.get("title", "Untitled")
-                    url = issue.get("web_url", "")
-                    print(f"- [#{iid} {title}]({url})")
-                    print(f"  - Owner: {_assignee_str(issue)}")
-                print()
-
-        print("## Description\n")
-        description = epic.get("description", "No description")
-        print(description if description else "*No description*")
-        print()
-
     def print_milestone_info(self, data: Dict[str, Any]) -> None:
         """Print milestone information in markdown format.
 
         Args:
             data: Dictionary containing milestone, issues, and epic mapping.
         """
-        milestone = data["milestone"]
-        issues = data.get("issues", [])
-        epic_map = data.get("epic_map", {})
-        self._print_milestone_markdown(milestone, issues, epic_map)
-
-    @staticmethod
-    def _group_issues_by_epic(
-        issues: List[Dict[str, Any]],
-    ) -> tuple:
-        """Partition issues into a by-epic mapping and a no-epic list.
-
-        Args:
-            issues: List of issue dictionaries.
-
-        Returns:
-            Tuple of (issues_by_epic, issues_without_epic).
-        """
-        issues_by_epic: Dict[Any, List[Dict[str, Any]]] = {}
-        issues_without_epic: List[Dict[str, Any]] = []
-        for issue in issues:
-            epic_iid = issue.get("epic_iid")
-            if epic_iid:
-                issues_by_epic.setdefault(epic_iid, []).append(issue)
-            else:
-                issues_without_epic.append(issue)
-        return issues_by_epic, issues_without_epic
-
-    @staticmethod
-    def _print_issue_line(issue: Dict[str, Any]) -> None:
-        """Print a single issue line in milestone breakdown format."""
-        iid = issue.get("iid")
-        title = issue.get("title", "Untitled")
-        state = issue.get("state", "unknown")
-        print(f"- #{iid} {title} `[{state}]`")
-
-    def _print_epic_breakdown(
-        self,
-        issues: List[Dict[str, Any]],
-        epic_map: Dict[int, Dict[str, Any]],
-    ) -> None:
-        """Print the Epic Breakdown section of a milestone report.
-
-        Args:
-            issues: All milestone issues.
-            epic_map: Mapping from epic iid to epic data.
-        """
-        print("\n## Epic Breakdown\n")
-        if not issues:
-            print("*No issues in this milestone*\n")
-            return
-
-        issues_by_epic, issues_without_epic = self._group_issues_by_epic(issues)
-
-        for epic_iid, epic_issues in sorted(issues_by_epic.items()):
-            epic_data = epic_map.get(epic_iid)
-            if epic_data:
-                print(f"### Epic &{epic_iid}: {epic_data.get('title', 'Unknown')}\n")
-            else:
-                print(f"### Epic &{epic_iid}\n")
-            for issue in epic_issues:
-                self._print_issue_line(issue)
-            print()
-
-        if issues_without_epic:
-            print("### No Epic\n")
-            for issue in issues_without_epic:
-                self._print_issue_line(issue)
-            print()
-
-    def _print_milestone_markdown(
-        self,
-        milestone: Dict[str, Any],
-        issues: List[Dict[str, Any]],
-        epic_map: Dict[int, Dict[str, Any]],
-    ) -> None:
-        """Print milestone info in markdown format."""
-        print(f"# Milestone %{milestone.get('iid')}: {milestone.get('title')}\n")
-
-        print(f"**URL:** {milestone.get('web_url')}  ")
-        print(f"**State:** {milestone.get('state')}  ")
-
-        if milestone.get("start_date"):
-            print(f"**Start Date:** {milestone['start_date']}  ")
-
-        if milestone.get("due_date"):
-            print(f"**Due Date:** {milestone['due_date']}  ")
-
-        total_issues = len(issues)
-        closed_count = len([i for i in issues if i.get("state") == "closed"])
-        print(f"**Progress:** {closed_count}/{total_issues} issues closed  ")
-
-        print(f"\n**Created:** {milestone.get('created_at')}  ")
-        print(f"**Updated:** {milestone.get('updated_at')}  ")
-
-        self._print_epic_breakdown(issues, epic_map)
-
-        print("## Description\n")
-        description = milestone.get("description", "No description")
-        print(description if description else "*No description*")
-        print()
+        print_milestone(
+            data["milestone"],
+            data.get("issues", []),
+            data.get("epic_map", {}),
+        )
 
     def load_mr(self, mr_ref: str, project: Optional[str] = None) -> Dict[str, Any]:
         """Load merge request information from GitLab.
@@ -1123,48 +856,4 @@ class TicketLoader:
         Args:
             data: Dictionary containing MR data.
         """
-        mr = data["mr"]
-        print(f"# MR !{mr.get('iid')}: {mr.get('title')}\n")
-
-        print(f"**URL:** {mr.get('web_url')}  ")
-        print(f"**State:** {mr.get('state')}  ")
-        print(f"**Author:** {mr.get('author', {}).get('name', 'Unknown')}  ")
-
-        if mr.get("draft"):
-            print("**Draft:** Yes  ")
-
-        if mr.get("source_branch"):
-            print(f"**Source Branch:** `{mr['source_branch']}`  ")
-
-        if mr.get("target_branch"):
-            print(f"**Target Branch:** `{mr['target_branch']}`  ")
-
-        labels = mr.get("labels", [])
-        if labels:
-            print(f"**Labels:** {', '.join([f'`{label}`' for label in labels])}  ")
-
-        assignees = mr.get("assignees", [])
-        if assignees:
-            print(f"**Assignees:** {_format_users(assignees)}  ")
-
-        reviewers = mr.get("reviewers", [])
-        if reviewers:
-            print(f"**Reviewers:** {_format_users(reviewers)}  ")
-
-        if mr.get("milestone"):
-            print(f"**Milestone:** {mr['milestone'].get('title')}  ")
-
-        print(f"\n**Created:** {mr.get('created_at')}  ")
-        print(f"**Updated:** {mr.get('updated_at')}  ")
-
-        if mr.get("merged_at"):
-            print(f"**Merged:** {mr['merged_at']}  ")
-
-        if mr.get("pipeline"):
-            pipeline_status = mr["pipeline"].get("status", "unknown")
-            print(f"**Pipeline Status:** {pipeline_status}  ")
-
-        print("\n## Description\n")
-        description = mr.get("description", "No description")
-        print(description if description else "*No description*")
-        print()
+        print_mr(data["mr"])

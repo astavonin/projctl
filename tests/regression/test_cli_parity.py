@@ -237,9 +237,14 @@ class TestReferenceFormats:
     @patch("subprocess.run")
     def test_epic_reference(self, mock_run: Mock, new_config_path: Path, monkeypatch) -> None:
         """&21 reference format should work."""
-        # Mock both epic and issues API calls
+        # Mock: 1) epic REST data, 2) GraphQL assignees, 3) epic issues
+        graphql_no_assignees = (
+            '{"data": {"group": {"workItem": {"widgets": '
+            '[{"type": "ASSIGNEES", "assignees": {"nodes": []}}]}}}}'
+        )
         mock_run.side_effect = [
             Mock(stdout='{"iid": 21, "title": "Test Epic"}', returncode=0),
+            Mock(stdout=graphql_no_assignees, returncode=0),
             Mock(stdout="[]", returncode=0),
         ]
 

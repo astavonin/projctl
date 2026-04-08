@@ -184,6 +184,30 @@ class EpicIssueCreator:
         """
         validate_labels(labels, self.config.get_allowed_labels())
 
+    def _build_issue_cmd(self, issue_config: Dict[str, Any], all_labels: List[str]) -> List[str]:
+        """Build the glab command list for creating an issue.
+
+        Args:
+            issue_config: Issue configuration dictionary.
+            all_labels: Already-merged and deduplicated labels to apply.
+
+        Returns:
+            Command list ready to pass to _run_glab_command.
+        """
+        cmd = ["issue", "create", "--title", issue_config["title"]]
+        if "description" in issue_config:
+            cmd.extend(["--description", issue_config["description"]])
+        if all_labels:
+            cmd.extend(["--label", ",".join(all_labels)])
+        if "assignee" in issue_config:
+            cmd.extend(["--assignee", issue_config["assignee"]])
+        if "milestone" in issue_config:
+            cmd.extend(["--milestone", issue_config["milestone"]])
+        if "due_date" in issue_config:
+            # glab uses --due flag for due date
+            cmd.extend(["--due", issue_config["due_date"]])
+        return cmd
+
     def create_issue(self, issue_config: Dict[str, Any], epic_id: Optional[str] = None) -> str:
         """Create a GitLab issue.
 
@@ -228,36 +252,15 @@ class EpicIssueCreator:
         id_suffix = f" (id: {yaml_id})" if yaml_id else ""
         logger.info("Creating issue: %s%s", title, id_suffix)
 
-        cmd = ["issue", "create", "--title", title]
-
-        # Add optional fields
-        if "description" in issue_config:
-            cmd.extend(["--description", issue_config["description"]])
-
         # Merge default labels from config with issue-specific labels
-        default_labels = self.config.get_default_labels()
-        issue_labels = issue_config.get("labels", [])
-
-        # Combine and deduplicate labels
-        all_labels = list(dict.fromkeys(default_labels + issue_labels))
+        all_labels = list(
+            dict.fromkeys(self.config.get_default_labels() + issue_config.get("labels", []))
+        )
 
         # Validate labels against allowed list (if configured)
         self._validate_issue_labels(all_labels)
 
-        if all_labels:
-            labels = ",".join(all_labels)
-            cmd.extend(["--label", labels])
-
-        if "assignee" in issue_config:
-            cmd.extend(["--assignee", issue_config["assignee"]])
-
-        if "milestone" in issue_config:
-            cmd.extend(["--milestone", issue_config["milestone"]])
-
-        if "due_date" in issue_config:
-            # glab uses --due flag for due date
-            cmd.extend(["--due", issue_config["due_date"]])
-
+        cmd = self._build_issue_cmd(issue_config, all_labels)
         output = self._run_glab_command(cmd)
 
         if self.dry_run:

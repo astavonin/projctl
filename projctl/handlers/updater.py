@@ -6,6 +6,7 @@ import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import Config
+from ..exceptions import PlatformError
 from .loader import TicketLoader
 
 logger = logging.getLogger(__name__)
@@ -524,8 +525,7 @@ class TicketUpdater:
                 "Either include the group in the URL or set 'default_group' in your config."
             )
 
-        encoded_group = urllib.parse.quote(group_path, safe="")
-        endpoint = f"groups/{encoded_group}/epics/{iid}"
+        endpoint = f"groups/{urllib.parse.quote(group_path, safe='')}/epics/{iid}"
 
         fields: Dict[str, Any] = {
             "title": title,
@@ -552,6 +552,11 @@ class TicketUpdater:
         else:
             fields["title"] = title
 
+        # Resolve milestone to its numeric database ID before the PUT so the
+        # ID is included in the initial request (required for older GitLab).
+        if milestone is not None:
+            fields["milestone_id"] = self._resolve_group_milestone_id(milestone, group_path)
+
         # Epic labels are returned as dicts with a 'name' key.
         labels_value = self._fetch_and_merge_labels(
             endpoint, labels_add, labels_remove, label_key="labels"
@@ -565,22 +570,15 @@ class TicketUpdater:
         output = self._loader._run_glab_command(self._build_put_cmd(endpoint, fields))
         result: Dict[str, Any] = json.loads(output)
 
+        # GitLab 15.9+ epics are backed by work items; the REST epics API silently
+        # ignores milestone_id on those. Use GraphQL workItemUpdate as an additional
+        # step when the response exposes a work_item_id.
         if milestone is not None:
-            # GitLab 15.9+ epics are backed by work items; the REST epics API silently
-            # ignores milestone_id. Use GraphQL workItemUpdate with milestoneWidget instead.
-            milestone_db_id = self._resolve_group_milestone_id(milestone, group_path)
             work_item_id = result.get("work_item_id")
             if work_item_id:
-                self._set_epic_milestone_via_graphql(work_item_id, milestone_db_id)
-            else:
-                # Fallback for older GitLab instances that don't use work items.
-                fields["milestone_id"] = milestone_db_id
-                output = self._loader._run_glab_command(self._build_put_cmd(endpoint, fields))
-                result = json.loads(output)
+                self._set_epic_milestone_via_graphql(work_item_id, fields["milestone_id"])
 
-        ref_display = result.get("iid", iid)
-        result_title = result.get("title", "")
-        print(f"✓ Updated epic #{ref_display}: {result_title}")
+        print(f"✓ Updated epic #{result.get('iid', iid)}: {result.get('title', '')}")
         return result
 
     def update_milestone(

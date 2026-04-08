@@ -142,10 +142,13 @@ class TestBackwardCompatibility:
         with open(new_path, "w", encoding="utf-8") as file:
             yaml.dump(new_config_data, file)
 
-        # Legacy should be loaded (with warning)
-        with pytest.warns(DeprecationWarning, match="legacy config location"):
+        # Loading a legacy-named file that also uses the old format emits two
+        # DeprecationWarnings: one for the filename and one for the config format.
+        with pytest.warns(DeprecationWarning) as warning_list:
             config = Config()
 
+        messages = [str(w.message) for w in warning_list]
+        assert any("legacy config location" in m for m in messages)
         assert config.loaded_config_path == legacy_path
 
     def test_fallback_to_new_format_when_no_legacy(
