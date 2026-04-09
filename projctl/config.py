@@ -11,6 +11,7 @@ except ImportError as exc:
     raise ImportError("PyYAML is required. Install with: pip install PyYAML") from exc
 
 from .utils.config_migration import transform_issue_template
+from .utils.git_helpers import get_current_repo_path
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +276,24 @@ class Config:
             return legacy_labels["allowed_labels"]  # type: ignore[no-any-return]
 
         return None
+
+    def get_github_repo(self) -> str:
+        """Return 'owner/repo' from config or auto-detected from git remote.
+
+        Raises:
+            ConfigurationError: If repo cannot be determined from config or git remote.
+        """
+        explicit = self.get_platform_config("github").get("repo")
+        if explicit:
+            return str(explicit)
+        detected = get_current_repo_path()
+        if not detected:
+            raise ConfigurationError(
+                "Cannot determine GitHub repository. "
+                "Set 'github.repo' in config.yaml or run from inside a git repository "
+                "with a GitHub remote."
+            )
+        return detected
 
     def _load_planning_sync(self) -> None:
         """Load planning sync configuration from config file.

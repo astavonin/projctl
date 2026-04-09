@@ -9,7 +9,8 @@ import pytest
 
 from projctl.config import Config
 from projctl.exceptions import PlatformError
-from projctl.handlers.loader import TicketLoader, _format_user, _format_users
+from projctl.formatters import format_user as _format_user, format_users as _format_users
+from projctl.handlers.loader import TicketLoader
 
 
 class TestTicketLoaderInit:
@@ -182,7 +183,13 @@ class TestLoadEpic:
         loader = TicketLoader(config)
 
         graphql_no_assignees = json.dumps(
-            {"data": {"group": {"workItem": {"widgets": [{"type": "ASSIGNEES", "assignees": {"nodes": []}}]}}}}
+            {
+                "data": {
+                    "group": {
+                        "workItem": {"widgets": [{"type": "ASSIGNEES", "assignees": {"nodes": []}}]}
+                    }
+                }
+            }
         )
         # Call order: REST epic data, GraphQL assignees
         mock_run.side_effect = [
@@ -278,14 +285,14 @@ class TestFormatting:
         loader.load_issue("#1")
 
         captured = capsys.readouterr()
-        # Check markdown formatting
-        assert "# " in captured.out or "**" in captured.out
+        # Verify actual heading with the IID from mock data
+        assert "# Issue #1: Test Issue" in captured.out
 
     @patch("subprocess.run")
     def test_includes_metadata(
         self, mock_run: Mock, new_config_path: Path, mock_glab_issue_view: str, capsys
     ) -> None:
-        """Output includes issue metadata."""
+        """Output includes issue metadata with correct values from mock data."""
         config = Config(new_config_path)
         loader = TicketLoader(config)
 
@@ -294,8 +301,9 @@ class TestFormatting:
         loader.load_issue("#1")
 
         captured = capsys.readouterr()
-        # Check metadata is included
-        assert "State:" in captured.out or "Labels:" in captured.out
+        assert "**State:** opened" in captured.out
+        assert "**Labels:**" in captured.out
+        assert "`type::feature`" in captured.out
 
 
 class TestFormatUser:
@@ -310,6 +318,11 @@ class TestFormatUser:
         """User with no name falls back to username."""
         user = {"username": "alex.stavonin"}
         assert _format_user(user) == "alex.stavonin (@alex.stavonin)"
+
+    def test_format_user_name_only(self) -> None:
+        """User with name but no username renders without (@...) suffix."""
+        user = {"name": "Alice"}
+        assert _format_user(user) == "Alice"
 
     def test_format_user_empty_dict(self) -> None:
         """Empty dict returns '?'."""
@@ -334,9 +347,21 @@ class TestGetStatusHistory:
     def test_returns_chronological_order(self, new_config_path: Path) -> None:
         """Notes are reversed from newest-first to oldest-first."""
         notes = [
-            {"system": True, "body": "set status to **Done**", "created_at": "2026-03-25T10:00:00Z"},
-            {"system": True, "body": "set status to **In progress**", "created_at": "2026-03-10T08:00:00Z"},
-            {"system": True, "body": "set status to **To do**", "created_at": "2026-03-01T09:00:00Z"},
+            {
+                "system": True,
+                "body": "set status to **Done**",
+                "created_at": "2026-03-25T10:00:00Z",
+            },
+            {
+                "system": True,
+                "body": "set status to **In progress**",
+                "created_at": "2026-03-10T08:00:00Z",
+            },
+            {
+                "system": True,
+                "body": "set status to **To do**",
+                "created_at": "2026-03-01T09:00:00Z",
+            },
         ]
         config = Config(new_config_path)
         loader = TicketLoader(config)
@@ -350,8 +375,16 @@ class TestGetStatusHistory:
     def test_ignores_non_system_notes(self, new_config_path: Path) -> None:
         """Non-system notes are skipped."""
         notes = [
-            {"system": False, "body": "set status to **Done**", "created_at": "2026-03-25T10:00:00Z"},
-            {"system": True, "body": "set status to **In progress**", "created_at": "2026-03-10T08:00:00Z"},
+            {
+                "system": False,
+                "body": "set status to **Done**",
+                "created_at": "2026-03-25T10:00:00Z",
+            },
+            {
+                "system": True,
+                "body": "set status to **In progress**",
+                "created_at": "2026-03-10T08:00:00Z",
+            },
         ]
         config = Config(new_config_path)
         loader = TicketLoader(config)
@@ -464,8 +497,20 @@ class TestDeriveEpicDates:
     def test_all_done_with_in_progress(self) -> None:
         """All non-rejected issues done: returns earliest start, latest end."""
         issues = [
-            {"timing": {"is_rejected": False, "start_date": "2026-03-10T08:00:00Z", "end_date": "2026-03-20T10:00:00Z"}},
-            {"timing": {"is_rejected": False, "start_date": "2026-03-05T09:00:00Z", "end_date": "2026-03-25T10:00:00Z"}},
+            {
+                "timing": {
+                    "is_rejected": False,
+                    "start_date": "2026-03-10T08:00:00Z",
+                    "end_date": "2026-03-20T10:00:00Z",
+                }
+            },
+            {
+                "timing": {
+                    "is_rejected": False,
+                    "start_date": "2026-03-05T09:00:00Z",
+                    "end_date": "2026-03-25T10:00:00Z",
+                }
+            },
         ]
         result = TicketLoader._derive_epic_dates(issues)
 
@@ -475,8 +520,20 @@ class TestDeriveEpicDates:
     def test_any_unfinished_clears_end_date(self) -> None:
         """Any non-rejected issue without end_date → epic end is None."""
         issues = [
-            {"timing": {"is_rejected": False, "start_date": "2026-03-10T08:00:00Z", "end_date": "2026-03-20T10:00:00Z"}},
-            {"timing": {"is_rejected": False, "start_date": "2026-03-12T08:00:00Z", "end_date": None}},
+            {
+                "timing": {
+                    "is_rejected": False,
+                    "start_date": "2026-03-10T08:00:00Z",
+                    "end_date": "2026-03-20T10:00:00Z",
+                }
+            },
+            {
+                "timing": {
+                    "is_rejected": False,
+                    "start_date": "2026-03-12T08:00:00Z",
+                    "end_date": None,
+                }
+            },
         ]
         result = TicketLoader._derive_epic_dates(issues)
 
@@ -487,7 +544,13 @@ class TestDeriveEpicDates:
         """Rejected issues do not affect dates."""
         issues = [
             {"timing": {"is_rejected": True, "start_date": None, "end_date": None}},
-            {"timing": {"is_rejected": False, "start_date": "2026-03-10T08:00:00Z", "end_date": "2026-03-20T10:00:00Z"}},
+            {
+                "timing": {
+                    "is_rejected": False,
+                    "start_date": "2026-03-10T08:00:00Z",
+                    "end_date": "2026-03-20T10:00:00Z",
+                }
+            },
         ]
         result = TicketLoader._derive_epic_dates(issues)
 
@@ -497,8 +560,20 @@ class TestDeriveEpicDates:
     def test_todo_to_done_no_start(self) -> None:
         """Issues without start_date (To do → Done) don't contribute to epic start."""
         issues = [
-            {"timing": {"is_rejected": False, "start_date": None, "end_date": "2026-03-20T10:00:00Z"}},
-            {"timing": {"is_rejected": False, "start_date": "2026-03-10T08:00:00Z", "end_date": "2026-03-25T10:00:00Z"}},
+            {
+                "timing": {
+                    "is_rejected": False,
+                    "start_date": None,
+                    "end_date": "2026-03-20T10:00:00Z",
+                }
+            },
+            {
+                "timing": {
+                    "is_rejected": False,
+                    "start_date": "2026-03-10T08:00:00Z",
+                    "end_date": "2026-03-25T10:00:00Z",
+                }
+            },
         ]
         result = TicketLoader._derive_epic_dates(issues)
 
@@ -508,8 +583,20 @@ class TestDeriveEpicDates:
     def test_all_issues_no_start_dates(self) -> None:
         """All issues went To do → Done: epic start is None."""
         issues = [
-            {"timing": {"is_rejected": False, "start_date": None, "end_date": "2026-03-20T10:00:00Z"}},
-            {"timing": {"is_rejected": False, "start_date": None, "end_date": "2026-03-25T10:00:00Z"}},
+            {
+                "timing": {
+                    "is_rejected": False,
+                    "start_date": None,
+                    "end_date": "2026-03-20T10:00:00Z",
+                }
+            },
+            {
+                "timing": {
+                    "is_rejected": False,
+                    "start_date": None,
+                    "end_date": "2026-03-25T10:00:00Z",
+                }
+            },
         ]
         result = TicketLoader._derive_epic_dates(issues)
 

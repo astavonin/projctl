@@ -234,9 +234,7 @@ class EpicIssueCreator:
             raise ValueError("Issue must have a 'title' field")
 
         if "weight" not in issue_config:
-            raise ValueError(
-                f"Issue '{issue_config['title']}' is missing required 'weight' field"
-            )
+            raise ValueError(f"Issue '{issue_config['title']}' is missing required 'weight' field")
         weight = issue_config["weight"]
         if not isinstance(weight, int) or weight < 0:
             raise ValueError(

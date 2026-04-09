@@ -1,0 +1,8 @@
+platform: github
+github:
+  repo: "owner/test-repo"
+common:
+  issue_template:
+    required_sections:
+      - "Description"
+      - "Acceptance Criteria"

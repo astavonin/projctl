@@ -53,9 +53,7 @@ def _print_issue_links(links: Dict[str, List[Dict[str, Any]]]) -> None:
         _print_link_list("### 🚧 Blocking", blocking)
 
 
-def _print_epic_issue_group(
-    heading: str, issues: List[Dict[str, Any]], show_labels: bool
-) -> None:
+def _print_epic_issue_group(heading: str, issues: List[Dict[str, Any]], show_labels: bool) -> None:
     """Print one group (opened or closed) of issues in an epic."""
     print(f"{heading}\n")
     for issue in issues:

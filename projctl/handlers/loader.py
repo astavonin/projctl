@@ -8,15 +8,16 @@ from typing import Any, Dict, List, Optional
 
 from ..config import Config
 from ..exceptions import PlatformError
-from ..formatters import format_user, format_users, print_epic, print_issue, print_milestone, print_mr
+from ..formatters import (
+    print_epic,
+    print_issue,
+    print_milestone,
+    print_mr,
+)
 from ..utils.git_helpers import extract_path_from_url, parse_issue_url
 from ..utils.glab_runner import run_glab_command
 
 logger = logging.getLogger(__name__)
-
-# Re-export for backwards compatibility with any external callers.
-_format_user = format_user
-_format_users = format_users
 
 
 class TicketLoader:
@@ -273,12 +274,17 @@ class TicketLoader:
             List of assignee dicts with 'name' and 'username' keys. Empty if none or on error.
         """
         query = (
-            "{ group(fullPath: %s) { workItem(iid: %s) { widgets { type "
+            "query($groupPath: String!, $iid: String!) { "
+            "group(fullPath: $groupPath) { workItem(iid: $iid) { widgets { type "
             "... on WorkItemWidgetAssignees { assignees { nodes { name username } } } } } } }"
-            % (json.dumps(group_path), json.dumps(str(epic_iid)))
         )
         try:
-            output = self._run_glab_command(["api", "graphql", "-f", f"query={query}"])
+            output = self._run_glab_command([
+                "api", "graphql",
+                "-f", f"query={query}",
+                "-f", f"groupPath={group_path}",
+                "-f", f"iid={epic_iid}",
+            ])
             data = json.loads(output)
             widgets = data.get("data", {}).get("group", {}).get("workItem", {}).get("widgets", [])
             for widget in widgets:
@@ -672,7 +678,7 @@ class TicketLoader:
             List of {'status': str, 'timestamp': str} dicts, oldest first.
             Empty list if notes cannot be fetched or no status transitions exist.
         """
-        api_endpoint = f"projects/{project_id}/issues/{issue_iid}/notes"
+        api_endpoint = f"projects/{project_id}/issues/{issue_iid}/notes?per_page=100"
         pattern = re.compile(r"set status to \*\*(.+?)\*\*", re.IGNORECASE)
 
         try:

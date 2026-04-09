@@ -4,6 +4,8 @@ import logging
 import subprocess
 from typing import List
 
+from ..utils.mr_builder import append_common_mr_flags
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,17 +30,7 @@ def _build_create_mr_cmd(args) -> List[str]:
         if getattr(args, flag, False):
             cmd.append(f"--{flag}")
 
-    for assignee in args.assignee or []:
-        cmd.extend(["--assignee", assignee])
-
-    for reviewer in args.reviewer or []:
-        cmd.extend(["--reviewer", reviewer])
-
-    for label in args.label or []:
-        cmd.extend(["--label", label])
-
-    if args.milestone:
-        cmd.extend(["--milestone", args.milestone])
+    append_common_mr_flags(cmd, args)
 
     if args.target_branch:
         cmd.extend(["--target-branch", args.target_branch])

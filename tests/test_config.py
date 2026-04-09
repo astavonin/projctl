@@ -3,6 +3,7 @@
 import warnings
 from pathlib import Path
 from typing import Any, Dict
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -253,3 +254,33 @@ class TestPlanningSyncConfig:
 
         config = Config(config_path)
         assert config.planning_sync == {}
+
+
+class TestGetGithubRepo:
+    """Test get_github_repo() method."""
+
+    def test_get_github_repo_from_config(self, temp_dir: Path) -> None:
+        """Returns explicit repo value from config when present."""
+        cfg_path = temp_dir / "config.yaml"
+        cfg_path.write_text("platform: github\n" "github:\n" "  repo: myorg/myrepo\n")
+        config = Config(cfg_path)
+        assert config.get_github_repo() == "myorg/myrepo"
+
+    def test_get_github_repo_auto_detected(self, temp_dir: Path) -> None:
+        """Falls back to git remote when repo not in config."""
+        cfg_path = temp_dir / "config.yaml"
+        cfg_path.write_text("platform: github\ngithub: {}\n")
+        config = Config(cfg_path)
+
+        with patch("projctl.config.get_current_repo_path", return_value="detected/repo"):
+            assert config.get_github_repo() == "detected/repo"
+
+    def test_get_github_repo_raises_when_unresolvable(self, temp_dir: Path) -> None:
+        """ConfigurationError raised when both config and git remote are absent."""
+        cfg_path = temp_dir / "config.yaml"
+        cfg_path.write_text("platform: github\ngithub: {}\n")
+        config = Config(cfg_path)
+
+        with patch("projctl.config.get_current_repo_path", return_value=None):
+            with pytest.raises(ConfigurationError, match="Cannot determine GitHub repository"):
+                config.get_github_repo()

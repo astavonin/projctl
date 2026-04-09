@@ -16,6 +16,10 @@ from .config import Config
 from .exceptions import PlatformError
 from .handlers.comment import cmd_comment
 from .handlers.creator import EpicIssueCreator
+from .handlers.github_creator import GithubIssueCreator
+from .handlers.github_loader import GithubLoader
+from .handlers.github_mr_handler import cmd_create_pr
+from .handlers.github_search import GithubSearchHandler
 from .handlers.loader import TicketLoader
 from .handlers.mr_handler import cmd_create_mr
 from .handlers.pipeline_handler import PipelineHandler
@@ -45,9 +49,13 @@ def cmd_create(args) -> int:
         config_path = Path(args.config) if args.config else None
         config = Config(config_path)
 
-        creator = EpicIssueCreator(config=config, dry_run=args.dry_run)
-        creator.process_yaml_file(args.yaml_file)
-        creator.print_summary()
+        if config.platform == "github":
+            github_creator = GithubIssueCreator(config=config, dry_run=args.dry_run)
+            github_creator.process_yaml_file(args.yaml_file)
+        else:
+            creator = EpicIssueCreator(config=config, dry_run=args.dry_run)
+            creator.process_yaml_file(args.yaml_file)
+            creator.print_summary()
         return 0
     except FileNotFoundError as err:
         logger.error(str(err))
@@ -55,6 +63,22 @@ def cmd_create(args) -> int:
     except (PlatformError, ValueError, yaml.YAMLError) as err:
         logger.error("Error: %s", err)
         return 1
+
+
+def _dispatch_github_load(loader: GithubLoader, resource_type: str, reference: str) -> None:
+    """Dispatch a GitHub load call based on resource type.
+
+    Args:
+        loader: The GithubLoader instance.
+        resource_type: One of "mr", "milestone", "issue".
+        reference: The resource reference string.
+    """
+    if resource_type == "mr":
+        loader.load_pr(reference)
+    elif resource_type == "milestone":
+        loader.load_milestone(reference)
+    else:
+        loader.load_issue(reference)
 
 
 def _dispatch_load(loader: TicketLoader, resource_type: str, reference: str) -> None:
@@ -87,9 +111,13 @@ def cmd_load(args) -> int:
     try:
         config_path = Path(args.config) if args.config else None
         config = Config(config_path)
-        loader = TicketLoader(config=config)
 
-        _dispatch_load(loader, args.resource_type, args.reference)
+        if config.platform == "github":
+            gh_loader = GithubLoader(config=config)
+            _dispatch_github_load(gh_loader, args.resource_type, args.reference)
+        else:
+            loader = TicketLoader(config=config)
+            _dispatch_load(loader, args.resource_type, args.reference)
         return 0
     except FileNotFoundError as err:
         logger.error(str(err))
@@ -113,17 +141,26 @@ def cmd_search(args) -> int:
         config_path = Path(args.config) if args.config else None
         config = Config(config_path)
 
-        searcher = SearchHandler(config=config)
-
-        if args.type == "issues":
-            searcher.search_issues(query=args.query, state=args.state, limit=args.limit)
-        elif args.type == "epics":
-            searcher.search_epics(query=args.query, state=args.state, limit=args.limit)
-        elif args.type == "milestones":
-            searcher.search_milestones(query=args.query, state=args.state, limit=args.limit)
+        if config.platform == "github":
+            gh_searcher = GithubSearchHandler(config=config)
+            if args.type == "issues":
+                gh_searcher.search_issues(query=args.query, state=args.state)
+            elif args.type == "milestones":
+                gh_searcher.search_milestones(query=args.query)
+            else:
+                logger.error("Search type '%s' is not supported on GitHub", args.type)
+                return 1
         else:
-            logger.error("Unknown search type: %s", args.type)
-            return 1
+            searcher = SearchHandler(config=config)
+            if args.type == "issues":
+                searcher.search_issues(query=args.query, state=args.state, limit=args.limit)
+            elif args.type == "epics":
+                searcher.search_epics(query=args.query, state=args.state, limit=args.limit)
+            elif args.type == "milestones":
+                searcher.search_milestones(query=args.query, state=args.state, limit=args.limit)
+            else:
+                logger.error("Unknown search type: %s", args.type)
+                return 1
 
         return 0
     except FileNotFoundError as err:
@@ -725,6 +762,27 @@ def _add_pipeline_debug_subparser(subparsers: argparse._SubParsersAction) -> Non
     p.add_argument("--branch", type=str, help="Branch name (default: current git branch)")
 
 
+def cmd_create_mr_dispatch(args) -> int:
+    """Handle the 'create-mr' subcommand, dispatching to the correct platform handler.
+
+    Args:
+        args: Parsed command-line arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for error).
+    """
+    try:
+        config_path = Path(args.config) if args.config else None
+        config = Config(config_path)
+    except FileNotFoundError as err:
+        logger.error(str(err))
+        return 1
+
+    if config.platform == "github":
+        return cmd_create_pr(args)
+    return cmd_create_mr(args)
+
+
 def main() -> int:
     """Main entry point for the script.
 
@@ -785,7 +843,7 @@ Documentation:
         "load": cmd_load,
         "search": cmd_search,
         "comment": cmd_comment,
-        "create-mr": cmd_create_mr,
+        "create-mr": cmd_create_mr_dispatch,
         "sync": cmd_sync,
         "update": cmd_update,
         "pipeline-debug": cmd_pipeline_debug,
