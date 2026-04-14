@@ -333,6 +333,13 @@ class EpicIssueCreator:
                 iid = parts[1].split("/")[0].split("?")[0]
                 return iid
 
+        # GitLab work_items URL format: https://gitlab.../group/project/-/work_items/123
+        if "/-/work_items/" in issue_url:
+            parts = issue_url.split("/-/work_items/")
+            if len(parts) == 2:
+                iid = parts[1].split("/")[0].split("?")[0]
+                return iid
+
         # Fallback: try to extract from #ID format
         if "#" in issue_url:
             return issue_url.split("#")[-1].split()[0]
@@ -811,14 +818,16 @@ class EpicIssueCreator:
             return "DRY_RUN_PROJECT_ID"
 
         # URL format: https://gitlab.com/group/subgroup/project/-/issues/123
-        if "/-/issues/" in first_issue_url:
-            parts = first_issue_url.split("/-/issues/")
-            if len(parts) == 2:
-                project_url = parts[0]
-                # Extract project path from URL
-                if "//" in project_url:
-                    project_path = "/".join(project_url.split("//")[1].split("/")[1:])
-                    return project_path
+        # or:         https://gitlab.com/group/subgroup/project/-/work_items/123
+        for separator in ("/-/issues/", "/-/work_items/"):
+            if separator in first_issue_url:
+                parts = first_issue_url.split(separator)
+                if len(parts) == 2:
+                    project_url = parts[0]
+                    # Extract project path from URL
+                    if "//" in project_url:
+                        project_path = "/".join(project_url.split("//")[1].split("/")[1:])
+                        return project_path
 
         return None
 

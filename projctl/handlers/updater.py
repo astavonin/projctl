@@ -298,10 +298,10 @@ class TicketUpdater:
         self._loader._run_glab_command(self._build_put_cmd(endpoint, {"epic_id": global_epic_id}))
         print(f"✓ Assigned issue #{iid} to epic &{epic_iid}")
 
-    def update_issue(  # pylint: disable=too-many-locals,too-many-branches
-        # Epic assignment adds a separate POST path and a local variable for the
-        # global issue ID, pushing both counts just above the default thresholds.
-        # Extracting a helper would obscure the single-method read-then-update flow.
+    def update_issue(  # pylint: disable=too-many-locals,too-many-branches,too-many-arguments
+        # Weight adds one more argument and one more branch, pushing the counts
+        # just above the default pylint thresholds. Extracting a helper would
+        # obscure the single-method read-then-update flow.
         self,
         issue_ref: str,
         *,
@@ -313,6 +313,7 @@ class TicketUpdater:
         milestone: Optional[str] = None,
         state_event: Optional[str] = None,
         epic: Optional[str] = None,
+        weight: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Update an existing GitLab issue.
 
@@ -326,6 +327,7 @@ class TicketUpdater:
             milestone: Milestone title or iid to set, or None to leave unchanged.
             state_event: 'close' or 'reopen', or None to leave unchanged.
             epic: Epic reference to assign the issue to (e.g. &47), or None to skip.
+            weight: Story-point weight (non-negative integer), or None to leave unchanged.
 
         Returns:
             Updated issue data returned by the API.
@@ -351,11 +353,13 @@ class TicketUpdater:
             "description": description,
             "state_event": state_event,
         }
+        if weight is not None:
+            fields["weight"] = weight
 
         # Determine whether there are fields to PUT (epic assignment is a
         # separate POST and does not go through the PUT endpoint).
         has_put_fields = any(
-            [title, description, state_event, labels_add, labels_remove, assignee, milestone]
+            [title, description, state_event, labels_add, labels_remove, assignee, milestone, weight]
         )
 
         if self.dry_run:

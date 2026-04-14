@@ -399,6 +399,9 @@ def cmd_update(args) -> int:
         if resource_type != "issue" and args.epic:
             logger.error("--epic is only valid for issue resources")
             return 1
+        if resource_type != "issue" and getattr(args, "weight", None) is not None:
+            logger.error("--weight is only valid for issue resources")
+            return 1
 
         # --- M3: Require at least one field to update ---
         if resource_type == "issue":
@@ -412,6 +415,7 @@ def cmd_update(args) -> int:
                     args.milestone,
                     args.state,
                     args.epic,
+                    getattr(args, "weight", None) is not None,
                 ]
             )
         elif resource_type == "mr":
@@ -465,6 +469,7 @@ def cmd_update(args) -> int:
                 milestone=args.milestone,
                 state_event=args.state,
                 epic=args.epic,
+                weight=getattr(args, "weight", None),
             )
         elif resource_type == "mr":
             updater.update_mr(
@@ -722,6 +727,9 @@ Examples:
         help="State event: close or reopen (issue/MR/epic); activate (milestone)",
     )
     p.add_argument("--epic", type=str, help="Assign issue to epic (e.g. &47) — issue only")
+    p.add_argument(
+        "--weight", type=int, metavar="N", help="Story-point weight in hours (issue only)"
+    )
     p.add_argument("--dry-run", action="store_true", help="Preview changes without executing")
 
 

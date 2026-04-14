@@ -48,6 +48,15 @@ def parse_issue_url(issue_ref: str) -> Tuple[Optional[str], Optional[str]]:
 
             return (project_path, iid)
 
+    # GitLab work_items URL format: https://gitlab.../group/project/-/work_items/123
+    if "/-/work_items/" in issue_ref:
+        parts = issue_ref.split("/-/work_items/")
+        if len(parts) == 2:
+            project_url = parts[0]
+            iid = parts[1].split("/")[0].split("?")[0]
+            project_path = extract_path_from_url(project_url)
+            return (project_path, iid)
+
     if issue_ref.startswith("#"):
         return (None, issue_ref[1:])
 
