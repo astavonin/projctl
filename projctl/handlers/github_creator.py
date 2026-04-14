@@ -84,7 +84,21 @@ class GithubIssueCreator:
             if isinstance(ms_title, str) and isinstance(ms_number, int):
                 cache[ms_title] = ms_number
 
-        cache.setdefault(title, None)
+        if title not in cache:
+            # Milestone not found — create it so issues can be linked immediately.
+            logger.info("[github] Milestone '%s' not found, creating it", title)
+            create_output = run_gh_command(
+                ["api", f"repos/{self.repo}/milestones", "-X", "POST", "-f", f"title={title}"]
+            )
+            created = json.loads(create_output)
+            new_number = created.get("number")
+            if isinstance(new_number, int):
+                cache[title] = new_number
+                logger.info("[github] Created milestone '%s' as #%d", title, new_number)
+            else:
+                cache[title] = None
+                logger.warning("[github] Created milestone '%s' but could not read its number", title)
+
         return cache[title]
 
     def _validate_issue_description(self, issue_config: Dict[str, Any]) -> None:
@@ -207,13 +221,15 @@ class GithubIssueCreator:
     def _build_issue_cmd(
         self,
         issue_config: Dict[str, Any],
-        milestone_number: Optional[int],
+        milestone_title: Optional[str],
     ) -> List[str]:
         """Build the gh issue create command.
 
         Args:
             issue_config: Issue configuration dictionary.
-            milestone_number: Resolved milestone number, or None.
+            milestone_title: Milestone title string, or None.
+                `gh issue create --milestone` accepts a title directly,
+                so we pass the title rather than a resolved number.
 
         Returns:
             Command list ready to pass to _run_gh_command.
@@ -232,8 +248,8 @@ class GithubIssueCreator:
         if "assignee" in issue_config:
             cmd.extend(["--assignee", str(issue_config["assignee"])])
 
-        if milestone_number is not None:
-            cmd.extend(["--milestone", str(milestone_number)])
+        if milestone_title is not None:
+            cmd.extend(["--milestone", milestone_title])
 
         return cmd
 
@@ -265,10 +281,13 @@ class GithubIssueCreator:
         id_suffix = f" (id: {yaml_id})" if yaml_id else ""
         logger.info("[github] Creating issue: %s%s", title, id_suffix)
 
-        milestone_number: Optional[int] = None
-        milestone_title = issue_config.get("milestone")
-        if milestone_title and not self.dry_run:
-            milestone_number = self._resolve_milestone_number(str(milestone_title), milestone_cache)
+        milestone_title: Optional[str] = None
+        raw_milestone = issue_config.get("milestone")
+        if raw_milestone:
+            milestone_title = str(raw_milestone)
+            if not self.dry_run:
+                # Ensure the milestone exists; creates it if absent.
+                self._resolve_milestone_number(milestone_title, milestone_cache)
 
         # Merge config default labels with issue-specific labels (deduplicate, order preserved)
         default_labels = self.config.get_default_labels()
@@ -277,7 +296,7 @@ class GithubIssueCreator:
             issue_labels = []
         all_labels = list(dict.fromkeys(default_labels + issue_labels))
         merged_issue_config = {**issue_config, "labels": all_labels}
-        cmd = self._build_issue_cmd(merged_issue_config, milestone_number)
+        cmd = self._build_issue_cmd(merged_issue_config, milestone_title)
 
         if self.dry_run:
             print(f"[DRY RUN] Would create issue: {title}")

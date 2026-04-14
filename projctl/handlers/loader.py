@@ -274,7 +274,7 @@ class TicketLoader:
             List of assignee dicts with 'name' and 'username' keys. Empty if none or on error.
         """
         query = (
-            "query($groupPath: String!, $iid: String!) { "
+            "query($groupPath: ID!, $iid: String!) { "
             "group(fullPath: $groupPath) { workItem(iid: $iid) { widgets { type "
             "... on WorkItemWidgetAssignees { assignees { nodes { name username } } } } } } }"
         )

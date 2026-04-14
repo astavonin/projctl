@@ -178,7 +178,8 @@ class TestCreateIssueAllFields:
         assert "--assignee" in cmd
         assert "octocat" in cmd
         assert "--milestone" in cmd
-        assert "7" in cmd
+        # gh issue create --milestone accepts a title, not a number
+        assert "v1.0" in cmd
 
 
 # ---------------------------------------------------------------------------

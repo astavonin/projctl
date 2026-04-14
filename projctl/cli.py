@@ -20,6 +20,7 @@ from .handlers.github_creator import GithubIssueCreator
 from .handlers.github_loader import GithubLoader
 from .handlers.github_mr_handler import cmd_create_pr
 from .handlers.github_search import GithubSearchHandler
+from .handlers.github_updater import GithubUpdater
 from .handlers.loader import TicketLoader
 from .handlers.mr_handler import cmd_create_mr
 from .handlers.pipeline_handler import PipelineHandler
@@ -292,6 +293,67 @@ def cmd_pipeline_debug(args) -> int:
 # pylint: disable=too-many-return-statements,too-many-branches
 # cmd_update validates resource-type-specific flags and at least one update
 # field before delegating, making multiple early returns and branches necessary.
+def _cmd_update_github(args, config) -> int:
+    """Handle the 'update' subcommand for GitHub platform.
+
+    Supports issue and pr resource types with state, title, label, assignee,
+    reviewer, and milestone fields.  Epic and milestone resource types are not
+    supported on GitHub.
+
+    Args:
+        args: Parsed command-line arguments.
+        config: Loaded Config object with platform == 'github'.
+
+    Returns:
+        Exit code (0 for success, 1 for error).
+    """
+    resource_type = args.update_type
+    ref = args.reference
+
+    if resource_type in ("epic", "milestone"):
+        logger.error("'%s' resource type is not supported on GitHub", resource_type)
+        return 1
+
+    if args.state == "activate":
+        logger.error("--state activate is only valid for GitLab milestones")
+        return 1
+
+    updater = GithubUpdater(config=config, dry_run=args.dry_run)
+
+    try:
+        if resource_type == "issue":
+            updater.update_issue(
+                ref,
+                state=args.state,
+                title=args.title,
+                labels_add=args.add_label,
+                labels_remove=args.remove_label,
+                assignee=args.assignee,
+                milestone=args.milestone,
+            )
+        elif resource_type in ("mr", "pr"):
+            updater.update_pr(
+                ref,
+                state=args.state,
+                title=args.title,
+                labels_add=args.add_label,
+                labels_remove=args.remove_label,
+                assignee=args.assignee,
+                reviewer=args.reviewer,
+                milestone=args.milestone,
+            )
+        else:
+            logger.error("Unknown resource type: %s", resource_type)
+            return 1
+
+        logger.info("✓ Updated %s %s", resource_type, ref)
+        return 0
+
+    except (PlatformError, ValueError) as err:
+        logger.error("Error: %s", err)
+        return 1
+
+
 def cmd_update(args) -> int:
     """Handle the 'update' subcommand.
 
@@ -304,6 +366,10 @@ def cmd_update(args) -> int:
     try:
         config_path = Path(args.config) if args.config else None
         config = Config(config_path)
+
+        if config.platform == "github":
+            return _cmd_update_github(args, config)
+
         updater = TicketUpdater(config=config, dry_run=args.dry_run)
 
         resource_type = args.update_type
