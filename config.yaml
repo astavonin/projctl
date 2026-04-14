@@ -1,19 +1,11 @@
-# CI Platform Manager Configuration for genai-automations repo
+platform: github
 
-platform: gitlab
+github:
+  repo: "astavonin/projctl"
 
-gitlab:
-  default_group: "your/default/group"
-
-  labels:
-    default:
-      - "type::feature"
-      - "development-status::backlog"
-
-    default_epic:
-      - "type::epic"
-
-    allowed: []
+labels:
+  default:
+    - "enhancement"
 
 common:
   issue_template:
