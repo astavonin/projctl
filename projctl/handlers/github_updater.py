@@ -60,9 +60,16 @@ class GithubUpdater:
             ValueError: If ref cannot be parsed.
         """
         number = self._parse_number(ref, prefix="#")
-        self._apply_update("issue", number, state=state, title=title,
-                           labels_add=labels_add, labels_remove=labels_remove,
-                           assignee=assignee, milestone=milestone)
+        self._apply_update(
+            "issue",
+            number,
+            state=state,
+            title=title,
+            labels_add=labels_add,
+            labels_remove=labels_remove,
+            assignee=assignee,
+            milestone=milestone,
+        )
 
     def update_pr(
         self,
@@ -93,9 +100,17 @@ class GithubUpdater:
             ValueError: If ref cannot be parsed.
         """
         number = self._parse_number(ref, prefix="!")
-        self._apply_update("pr", number, state=state, title=title,
-                           labels_add=labels_add, labels_remove=labels_remove,
-                           assignee=assignee, reviewer=reviewer, milestone=milestone)
+        self._apply_update(
+            "pr",
+            number,
+            state=state,
+            title=title,
+            labels_add=labels_add,
+            labels_remove=labels_remove,
+            assignee=assignee,
+            reviewer=reviewer,
+            milestone=milestone,
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -130,9 +145,7 @@ class GithubUpdater:
         Returns:
             List of label name strings.
         """
-        output = run_gh_command(
-            [resource, "view", number, "--json", "labels"]
-        )
+        output = run_gh_command([resource, "view", number, "--json", "labels"])
         data = json.loads(output) if output else {}
         raw = data.get("labels", [])
         return [lbl["name"] if isinstance(lbl, dict) else str(lbl) for lbl in raw]
@@ -177,13 +190,15 @@ class GithubUpdater:
 
         if labels_add or labels_remove:
             current = self._current_labels(resource, number) if not self.dry_run else []
-            merged = list(dict.fromkeys(
-                [l for l in current if l not in (labels_remove or [])]
-                + (labels_add or [])
-            ))
+            merged = list(
+                dict.fromkeys(
+                    [lbl for lbl in current if lbl not in (labels_remove or [])]
+                    + (labels_add or [])
+                )
+            )
             for lbl in merged:
                 edit_cmd.extend(["--add-label", lbl])
-            for lbl in (labels_remove or []):
+            for lbl in labels_remove or []:
                 edit_cmd.extend(["--remove-label", lbl])
 
         if assignee:

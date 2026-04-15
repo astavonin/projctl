@@ -142,7 +142,7 @@ class GithubLoader:
             ValueError: If the remaining string is not a positive integer.
         """
         if ref.startswith(prefix):
-            ref = ref[len(prefix):]
+            ref = ref[len(prefix) :]
         if not ref.isdigit():
             raise ValueError(
                 f"Invalid reference {ref!r}: expected a positive integer after '{prefix}'"

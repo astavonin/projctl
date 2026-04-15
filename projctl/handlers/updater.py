@@ -359,7 +359,16 @@ class TicketUpdater:
         # Determine whether there are fields to PUT (epic assignment is a
         # separate POST and does not go through the PUT endpoint).
         has_put_fields = any(
-            [title, description, state_event, labels_add, labels_remove, assignee, milestone, weight]
+            [
+                title,
+                description,
+                state_event,
+                labels_add,
+                labels_remove,
+                assignee,
+                milestone,
+                weight,
+            ]
         )
 
         if self.dry_run:

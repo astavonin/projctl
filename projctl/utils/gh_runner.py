@@ -7,9 +7,7 @@ from .cli_runner import run_cli_command
 
 logger = logging.getLogger(__name__)
 
-_NOT_FOUND_MSG = (
-    "gh command not found. Please install GitHub CLI (https://cli.github.com)."
-)
+_NOT_FOUND_MSG = "gh command not found. Please install GitHub CLI (https://cli.github.com)."
 
 
 def run_gh_command(cmd: List[str]) -> str:

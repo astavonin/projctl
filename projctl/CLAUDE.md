@@ -5,12 +5,11 @@ Multi-platform CI automation tool for GitLab/GitHub workflow management.
 ## Quick Start
 
 ```bash
-# Install with dev dependencies
-pip install -e ".[dev]"
+# First-time setup (creates .venv and installs CLI via pipx)
+make install
 
 # Basic usage
-python3 -m projctl --help
-projctl --help  # If installed
+projctl --help
 
 # Planning sync (most common)
 projctl sync push
@@ -23,24 +22,38 @@ projctl sync pull --dry-run
 ```
 projctl/
 ├── __init__.py
-├── __main__.py           # Entry point
-├── cli.py                # CLI interface with command dispatch
-├── config.py             # Multi-platform configuration
-├── exceptions.py         # PlatformError and custom exceptions
-├── handlers/             # Modular operation handlers
-│   ├── sync.py          # Planning folder sync
-│   ├── loader.py        # Load issues/epics/milestones/MRs
-│   ├── creator.py       # Create issues/epics
-│   ├── updater.py       # Update issues/MRs/epics/milestones
-│   ├── search.py        # Search operations
-│   ├── comment.py       # Post MR comments
-│   └── mr_handler.py    # Create merge requests
-├── utils/               # Shared utilities
+├── __main__.py                # Entry point
+├── cli.py                     # CLI interface with command dispatch
+├── config.py                  # Multi-platform configuration
+├── exceptions.py              # PlatformError and custom exceptions
+├── handlers/                  # Modular operation handlers
+│   ├── comment.py             # Post MR/PR review comments
+│   ├── creator.py             # Create issues/epics/milestones (GitLab)
+│   ├── github_creator.py      # Create issues (GitHub)
+│   ├── github_loader.py       # Load issues/PRs/milestones (GitHub)
+│   ├── github_mr_handler.py   # Create pull requests (GitHub)
+│   ├── github_search.py       # Search issues/milestones (GitHub)
+│   ├── github_updater.py      # Update issues/PRs (GitHub)
+│   ├── labels.py              # Display configured labels
+│   ├── loader.py              # Load issues/epics/milestones/MRs (GitLab)
+│   ├── mr_handler.py          # Create merge requests (GitLab)
+│   ├── pipeline_handler.py    # Debug failed pipeline jobs (GitLab)
+│   ├── search.py              # Search operations (GitLab)
+│   ├── sync.py                # Planning folder sync (Google Drive)
+│   ├── updater.py             # Update issues/MRs/epics/milestones (GitLab)
+│   └── wiki.py                # Manage GitLab project wiki pages
+├── utils/                     # Shared utilities
+│   ├── cli_runner.py
 │   ├── config_migration.py
+│   ├── gh_runner.py           # GitHub CLI runner (gh)
 │   ├── git_helpers.py
+│   ├── glab_runner.py         # GitLab CLI runner (glab)
 │   ├── logging_config.py
+│   ├── mr_builder.py
 │   └── validation.py
-└── formatters/          # Output formatters
+└── formatters/                # Output formatters
+    ├── ticket_formatter.py
+    └── utils.py
 ```
 
 **Design Principles:**
@@ -75,7 +88,7 @@ gitlab:
     default_epic: ["type::epic"]  # OPTIONAL (only for creating epics)
     allowed: []  # OPTIONAL (empty = no validation)
 
-# GitHub-specific settings (future)
+# GitHub-specific settings
 github:
   default_org: "organization"
 
@@ -122,15 +135,23 @@ projctl create --config custom_config.yaml epic_definition.yaml
 
 **YAML Structure for Creating Issues:**
 
-The YAML file must contain two top-level sections: `epic` and `issues`.
+The YAML file supports an optional `milestone` section, a required `epic` section, and a required `issues` section.
 
 ```yaml
+# ============================================================
+# MILESTONE SECTION (OPTIONAL — creates or links a milestone)
+# ============================================================
+milestone:
+  title: "v2.0"
+  description: "Second major release"  # optional
+  due_date: "2026-12-31"              # optional, YYYY-MM-DD
+
 # ============================================================
 # EPIC SECTION (REQUIRED)
 # ============================================================
 epic:
-  # Option 1: Link to existing epic (recommended for adding issues to existing epics)
-  id: 12  # IID of existing epic (use: projctl load &12 to verify)
+  # Option 1: Link to existing epic
+  id: 12  # IID of existing epic (use: projctl load epic 12 to verify)
 
   # Option 2: Create new epic
   # title: "Epic Title"  # REQUIRED if creating new epic
@@ -185,6 +206,11 @@ issues:
 
 **Field Reference:**
 
+**Milestone Section (optional):**
+- `title` (string, REQUIRED if section present) - Milestone title
+- `description` (string, optional) - Milestone description
+- `due_date` (string, optional) - Due date in YYYY-MM-DD format
+
 **Epic Section:**
 - `id` (int, REQUIRED if using existing epic) - IID of existing epic
 - `title` (string, REQUIRED if creating new epic) - Epic title
@@ -216,86 +242,7 @@ issues:
      - Format: `["#13", "#42"]`
      - String format with `#` prefix
 
-  **Usage Patterns:**
-
-  - **Mixed References** - Combine all formats
-    - Format: `["design-task", 13, "#42"]`
-    - YAML-local IDs and GitLab IIDs together
-
-  **Examples:**
-
-  ```yaml
-  # Example 1: YAML-local dependencies only (existing behavior)
-  issues:
-    - id: "research"
-      title: "Research Architecture"
-      description: |
-        # Description
-        Research existing patterns
-
-        # Acceptance Criteria
-        - Research complete
-
-    - id: "design"
-      title: "Create Design"
-      dependencies: ["research"]  # Blocked by research task
-      description: |
-        # Description
-        Design based on research
-
-        # Acceptance Criteria
-        - Design approved
-
-  # Example 2: External GitLab issue dependencies
-  issues:
-    - id: "new-feature"
-      title: "Implement New Feature"
-      dependencies:
-        - 13    # Depends on existing issue #13
-        - "#42" # Depends on existing issue #42
-      description: |
-        # Description
-        Feature implementation
-
-        # Acceptance Criteria
-        - Feature complete
-
-  # Example 3: Mixed dependencies (YAML + external)
-  issues:
-    - id: "integration"
-      title: "Integration Testing"
-      dependencies:
-        - "new-feature"  # YAML-local: depends on issue in this file
-        - 13             # External: depends on existing GitLab issue #13
-        - "#25"          # External: depends on existing GitLab issue #25
-      description: |
-        # Description
-        Integration tests
-
-        # Acceptance Criteria
-        - Tests pass
-
-  # Example 4: Numeric string IDs (YAML-local, not external)
-  issues:
-    - id: "123"  # Valid YAML ID (string)
-      title: "Task 123"
-      description: |
-        # Description
-        Task content
-
-        # Acceptance Criteria
-        - Complete
-
-    - id: "follow-up"
-      title: "Follow-up Task"
-      dependencies: ["123"]  # References YAML ID "123", NOT issue #123
-      description: |
-        # Description
-        Depends on task above
-
-        # Acceptance Criteria
-        - Complete
-  ```
+  **Mixed References** — combine all formats: `["design-task", 13, "#42"]`
 
   **Important Notes:**
   - YAML-local IDs require the `id` field on referenced issues
@@ -304,7 +251,7 @@ issues:
   - External GitLab IIDs reference issues in the same project
   - External dependencies are validated before issue creation
   - Invalid external references will fail with clear error messages
-  - Use `projctl load #13` to verify external issues exist
+  - Use `projctl load issue 13` to verify external issues exist
 
 **General Important Notes:**
 1. Epic must have EITHER `id` (existing) OR `title` (new)
@@ -317,21 +264,21 @@ issues:
 **Load information:**
 ```bash
 # Issue
-projctl load 113
-projctl load #113
-projctl load https://gitlab.com/group/project/-/issues/113
+projctl load issue 113
+projctl load issue "#113"
+projctl load issue https://gitlab.com/group/project/-/issues/113
 
 # Epic
-projctl load &21
-projctl load 21 --type epic
+projctl load epic 21
+projctl load epic "&21"
 
 # Milestone
-projctl load %123
-projctl load 123 --type milestone
+projctl load milestone 123
+projctl load milestone "%123"
 
 # Merge Request
-projctl load !134
-projctl load 134 --type mr
+projctl load mr 134
+projctl load mr "!134"
 ```
 
 **Search:**
@@ -358,11 +305,17 @@ projctl update issue 231 --assignee alice
 # Set milestone (title or iid auto-resolved to numeric ID)
 projctl update issue 231 --milestone "v2.0"
 
+# Assign issue to an epic
+projctl update issue 231 --epic "&47"
+
+# Set story-point weight in hours
+projctl update issue 231 --weight 3
+
 # Close / reopen (issue, MR, epic)
 projctl update issue 231 --state close
 projctl update epic 37 --state reopen
 
-# Update MR: assignee, reviewer, target branch
+# Update MR: reviewer, target branch
 projctl update mr 144 --reviewer bob --target-branch main
 
 # Activate milestone and set due date
@@ -390,9 +343,11 @@ projctl update mr https://gitlab.com/group/repo/-/merge_requests/144 ...
 | `--remove-label LABEL` | all | Remove label (repeatable) |
 | `--assignee USERNAME` | issue, mr | Username; auto-resolved to numeric user ID |
 | `--reviewer USERNAME` | mr only | Username; auto-resolved to numeric user ID |
-| `--milestone TITLE_OR_IID` | issue, mr | Title or iid; auto-resolved to numeric milestone ID |
+| `--milestone TITLE_OR_IID` | issue, mr, epic | Title or iid; auto-resolved to numeric milestone ID |
 | `--target-branch BRANCH` | mr only | Change MR target branch |
 | `--due-date YYYY-MM-DD` | milestone only | Set due date |
+| `--epic REF` | issue only | Assign issue to epic (e.g. `&47`) |
+| `--weight N` | issue only | Story-point weight in hours |
 | `--state EVENT` | all (restricted) | State transition (see below) |
 | `--dry-run` | all | Show intent without any API calls |
 
@@ -406,7 +361,7 @@ projctl update mr https://gitlab.com/group/repo/-/merge_requests/144 ...
 
 **Key behaviors:**
 - `--assignee` / `--reviewer` accept GitLab usernames and are resolved to numeric IDs via `glab api users?username=<name>`.
-- `--milestone` accepts a title or iid string and is resolved to the numeric database ID via the milestones API.
+- `--milestone` accepts a milestone title or iid and is resolved to the numeric database ID via the milestones API.
 - `--dry-run` performs zero API calls (label reads are also skipped; intent is shown as `<add: [...], remove: [...]>`).
 - At least one update flag is required; otherwise an error is returned.
 - Type-specific flags are validated upfront and rejected with a clear message if used on the wrong resource type.
@@ -422,13 +377,62 @@ projctl comment review.yaml --mr 134
 projctl comment review.yaml --dry-run
 ```
 
-**Create merge request:**
+**Create merge request / pull request:**
 ```bash
 projctl create-mr --title "Add feature X" --draft
 projctl create-mr --fill --reviewer alice --label "type::feature"
 projctl create-mr --target-branch develop --milestone "v2.0"
 projctl create-mr --dry-run
 ```
+
+Platform dispatch: uses `gh pr create` for GitHub, `glab mr create` for GitLab, based on `config.platform`.
+
+### Pipeline Debugging
+
+Debug failed CI/CD pipeline jobs on the current (or specified) branch:
+
+```bash
+projctl pipeline-debug
+projctl pipeline-debug --branch feature/my-branch
+```
+
+Fetches failed job logs from the latest pipeline and prints a summary. GitLab only.
+
+**Handler:** `handlers/pipeline_handler.py` — `PipelineHandler` class
+
+### Wiki Management
+
+Manage GitLab project wiki pages. Must be run from within a git repository with a GitLab remote.
+
+```bash
+# List all pages (slug + title)
+projctl wiki list
+
+# Load and print a page by slug
+projctl wiki load my-page-slug
+
+# Create a new page from a Markdown file
+projctl wiki create "My Page Title" --content path/to/page.md
+projctl wiki create "My Page Title" --content page.md --dry-run
+
+# Update an existing page (preserves current title)
+projctl wiki update my-page-slug --content updated.md
+projctl wiki update my-page-slug --content updated.md --dry-run
+```
+
+**Handler:** `handlers/wiki.py` — `WikiHandler` class
+
+### Labels
+
+Display configured labels from the project config, grouped by prefix (`type::`, `priority::`, etc.):
+
+```bash
+projctl labels
+```
+
+Shows `allowed` labels if configured and non-empty; otherwise falls back to `default` labels with a note. GitLab and GitHub.
+
+**Handler:** `handlers/labels.py` — `LabelsHandler` class
 
 ### Planning Folder Synchronization
 
@@ -595,49 +599,42 @@ rsync -av --delete \
 
 ## Development
 
+### Setup
+
+```bash
+make install   # creates .venv, installs dev deps, registers CLI via pipx
+```
+
 ### Running Tests
 
 ```bash
-# Install dev dependencies
-pip install -e ".[dev]"
-
-# Run all tests
-pytest tests/
-
-# Run specific test module
-pytest tests/test_config.py -v
-
-# Run with coverage
-pytest --cov=projctl --cov-report=term-missing
-
-# Run specific test
-pytest tests/test_config.py::TestConfig::test_planning_sync_config -v
+make test                                              # run full suite with coverage
+.venv/bin/pytest tests/test_config.py -v              # single module
+.venv/bin/pytest tests/test_config.py::TestConfig::test_planning_sync_config -v
 ```
 
 ### Linting
 
-All linters installed in `.venv/bin/`:
-
 ```bash
-# Pylint (code quality)
-pylint projctl/ --rcfile=pyproject.toml
+make lint      # pylint + flake8 + mypy
+make pylint    # pylint only
+make format    # apply black formatting
+```
 
-# Flake8 (style)
-flake8 projctl/ --max-line-length=120
-
-# Mypy (type checking)
-mypy projctl/ --config-file=pyproject.toml
-
-# Black (formatting)
-black projctl/ --check
-black projctl/  # Apply formatting
+Individual linters (all in `.venv/bin/`):
+```bash
+.venv/bin/pylint projctl/ --rcfile=pyproject.toml
+.venv/bin/flake8 projctl/          # config: .flake8 (max-line-length=120, extend-ignore=E203)
+.venv/bin/mypy projctl/ --config-file=pyproject.toml
+.venv/bin/black projctl/ --check   # check only
+.venv/bin/black projctl/           # apply
 ```
 
 **Project Standards:**
 - pylint score: >= 9.5/10
-- flake8: Zero violations
-- mypy: Zero type errors
-- black: All files formatted
+- flake8: zero violations
+- mypy: zero type errors
+- black: all files formatted
 
 ### Adding New Handlers
 
@@ -672,7 +669,7 @@ black projctl/  # Apply formatting
        handler.execute()
        return 0
 
-   # In main():
+   # In main(): register subparser and add to commands dict
    commands = {
        # ...
        'new': cmd_new,
@@ -688,6 +685,7 @@ black projctl/  # Apply formatting
 - **Python** >= 3.7
 - **PyYAML** >= 5.4 - YAML parsing
 - **glab** CLI - GitLab operations
+- **gh** CLI - GitHub operations
 - **rsync** - Planning folder sync (system package)
 - **Google Drive** client - Planning folder sync
 
@@ -704,14 +702,11 @@ black projctl/  # Apply formatting
 ### Installation
 
 ```bash
-# Runtime only
-pip install -e .
+# First-time development setup (recommended)
+make install   # installs .venv deps + registers CLI via pipx
 
-# Development
-pip install -e ".[dev]"
-
-# From pyproject.toml
-pip install projctl[dev]
+# Runtime only (no dev deps)
+pipx install git+https://github.com/astavonin/projctl.git
 ```
 
 ## Troubleshooting
@@ -760,17 +755,15 @@ default_epic labels are NOT required for loading epics (only for creating them).
 
 **Issue: Command not found**
 ```
-Solution: Install package: pip install -e . or use python3 -m projctl
+Solution: Run make install, or use python3 -m projctl
 ```
 
 **Issue: Import errors**
 ```
-Solution: Ensure in correct directory, reinstall: pip install -e ".[dev]"
+Solution: Ensure in correct directory, run make install to reinstall
 ```
 
 ## Additional Resources
 
-- **Legacy docs**: `glab-management/CLAUDE.md`
-- **Config example**: `projctl_config.yaml.example`
-- **Project root**: `/home/astavonin/projects/genai-automations`
-- **Virtual env**: `.venv/` (pre-configured with all dependencies)
+- **Config example**: `config.yaml`
+- **Virtual env**: `.venv/` (created by `make install`)

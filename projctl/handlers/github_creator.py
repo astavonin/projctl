@@ -97,7 +97,9 @@ class GithubIssueCreator:
                 logger.info("[github] Created milestone '%s' as #%d", title, new_number)
             else:
                 cache[title] = None
-                logger.warning("[github] Created milestone '%s' but could not read its number", title)
+                logger.warning(
+                    "[github] Created milestone '%s' but could not read its number", title
+                )
 
         return cache[title]
 

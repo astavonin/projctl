@@ -8,6 +8,7 @@ Multi-platform CI automation tool for GitLab/GitHub workflow management.
 - Load issues, epics, milestones, and MRs
 - Search across issues, epics, and milestones
 - Create merge requests and post review comments
+- Display configured labels from the project config
 - Sync planning folders with Google Drive across machines
 
 ## Installation
@@ -34,6 +35,8 @@ projctl load &21     # load epic
 projctl load !134    # load MR
 
 projctl search issues "streaming"
+
+projctl labels       # show configured labels
 
 projctl sync push    # push planning → Google Drive
 projctl sync pull    # pull Google Drive → planning

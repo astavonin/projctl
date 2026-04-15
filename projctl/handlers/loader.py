@@ -279,12 +279,18 @@ class TicketLoader:
             "... on WorkItemWidgetAssignees { assignees { nodes { name username } } } } } } }"
         )
         try:
-            output = self._run_glab_command([
-                "api", "graphql",
-                "-f", f"query={query}",
-                "-f", f"groupPath={group_path}",
-                "-f", f"iid={epic_iid}",
-            ])
+            output = self._run_glab_command(
+                [
+                    "api",
+                    "graphql",
+                    "-f",
+                    f"query={query}",
+                    "-f",
+                    f"groupPath={group_path}",
+                    "-f",
+                    f"iid={epic_iid}",
+                ]
+            )
             data = json.loads(output)
             widgets = data.get("data", {}).get("group", {}).get("workItem", {}).get("widgets", [])
             for widget in widgets:

@@ -15,6 +15,7 @@ except ImportError:
 from .config import Config
 from .exceptions import PlatformError
 from .handlers.comment import cmd_comment
+from .handlers.labels import LabelsHandler
 from .handlers.creator import EpicIssueCreator
 from .handlers.github_creator import GithubIssueCreator
 from .handlers.github_loader import GithubLoader
@@ -826,6 +827,37 @@ def cmd_wiki(args) -> int:
         return 1
 
 
+def _add_labels_subparser(subparsers: argparse._SubParsersAction) -> None:
+    """Register the 'labels' subcommand."""
+    subparsers.add_parser(
+        "labels",
+        help="Display configured labels from the project config",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+
+def cmd_labels(args) -> int:
+    """Handle the 'labels' subcommand.
+
+    Args:
+        args: Parsed command-line arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for error).
+    """
+    try:
+        config_path = Path(args.config) if args.config else None
+        config = Config(config_path)
+        LabelsHandler(config).print_labels()
+        return 0
+    except FileNotFoundError as err:
+        logger.error(str(err))
+        return 1
+    except (PlatformError, ValueError) as err:
+        logger.error("Error: %s", err)
+        return 1
+
+
 def _add_pipeline_debug_subparser(subparsers: argparse._SubParsersAction) -> None:
     """Register the 'pipeline-debug' subcommand."""
     p = subparsers.add_parser(
@@ -902,6 +934,7 @@ Documentation:
     _add_update_subparser(subparsers)
     _add_pipeline_debug_subparser(subparsers)
     _add_wiki_subparser(subparsers)
+    _add_labels_subparser(subparsers)
 
     args = parser.parse_args()
 
@@ -922,6 +955,7 @@ Documentation:
         "update": cmd_update,
         "pipeline-debug": cmd_pipeline_debug,
         "wiki": cmd_wiki,
+        "labels": cmd_labels,
     }
 
     try:
