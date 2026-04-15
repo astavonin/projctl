@@ -15,7 +15,11 @@ from ..config import Config
 from ..exceptions import PlatformError
 from ..utils.git_helpers import parse_issue_url
 from ..utils.glab_runner import run_glab_command
-from ..utils.validation import validate_issue_description, validate_labels
+from ..utils.validation import (
+    validate_issue_description,
+    validate_labels,
+    validate_required_label_groups,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +261,9 @@ class EpicIssueCreator:
 
         # Validate labels against allowed list (if configured)
         self._validate_issue_labels(all_labels)
+
+        # Validate required OR groups — exactly one label per group must be present
+        validate_required_label_groups(all_labels, self.config.get_required_label_groups())
 
         cmd = self._build_issue_cmd(issue_config, all_labels)
         output = self._run_glab_command(cmd)

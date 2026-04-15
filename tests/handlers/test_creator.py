@@ -518,3 +518,46 @@ class TestProcessYamlFileMilestone:
 
         with pytest.raises(ValueError, match="'issues' but no 'epic'"):
             creator.process_yaml_file(yaml_path)
+
+
+class TestOrGroupValidationBeforeSubprocess:
+    """Ensure OR group validation fires before any subprocess call (M3)."""
+
+    def _config_with_or_groups(self, tmp_path: Path) -> Config:
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(
+            "platform: gitlab\n"
+            "gitlab:\n"
+            "  default_group: g/p\n"
+            "  labels:\n"
+            "    default:\n"
+            "      - - type::feature\n"
+            "        - type::bug\n"
+            "common:\n"
+            "  issue_template:\n"
+            "    required_sections:\n"
+            "      - Description\n"
+            "      - Acceptance Criteria\n"
+        )
+        return Config(cfg_path)
+
+    @patch("projctl.handlers.creator.run_glab_command")
+    def test_missing_or_group_raises_before_glab(
+        self, mock_glab: Mock, tmp_path: Path
+    ) -> None:
+        """ValueError from OR group validation fires before any glab subprocess call."""
+        config = self._config_with_or_groups(tmp_path)
+        creator = EpicIssueCreator(config, dry_run=False)
+
+        # Issue labels contain no member of the required [type::feature | type::bug] group
+        issue_config = {
+            "title": "Missing group label",
+            "description": "# Description\n\nX\n\n# Acceptance Criteria\n\n- AC1",
+            "labels": ["development-status::backlog"],
+            "weight": 1,
+        }
+
+        with pytest.raises(ValueError, match="Missing required label"):
+            creator.create_issue(issue_config, epic_id=None)
+
+        mock_glab.assert_not_called()

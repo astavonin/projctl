@@ -9,6 +9,7 @@ Multi-platform CI automation tool for GitLab/GitHub workflow management.
 - Search across issues, epics, and milestones
 - Create merge requests and post review comments
 - Display configured labels from the project config
+- OR group label validation — require exactly one label from a set per issue
 - Sync planning folders with Google Drive across machines
 
 ## Installation
@@ -30,13 +31,13 @@ pipx install -e ./projctl
 projctl create --dry-run epic.yaml   # preview issue creation
 projctl create epic.yaml             # create issues
 
-projctl load #113    # load issue
-projctl load &21     # load epic
-projctl load !134    # load MR
+projctl load issue 113   # load issue
+projctl load epic 21     # load epic
+projctl load mr 134      # load MR
 
 projctl search issues "streaming"
 
-projctl labels       # show configured labels
+projctl labels       # show configured labels (grouped by prefix)
 
 projctl sync push    # push planning → Google Drive
 projctl sync pull    # pull Google Drive → planning

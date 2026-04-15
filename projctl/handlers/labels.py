@@ -68,14 +68,27 @@ class LabelsHandler:
                 print(f"  {label}")
             print()
 
+    @staticmethod
+    def _print_or_groups(groups: List[List[str]]) -> None:
+        """Print OR groups (required pick-one label sets) in human-readable format.
+
+        Args:
+            groups: List of OR groups from config.
+        """
+        for group in groups:
+            print(f"  [{' | '.join(group)}]")
+        print()
+
     def print_labels(self) -> None:
         """Print configured labels to stdout.
 
         If ``allowed`` labels are configured and non-empty they are shown with a
         'Configured labels' heading.  Otherwise the ``default`` labels are shown
-        with a note that no allowed list is configured.
+        with a note that no allowed list is configured.  Required OR groups from
+        ``default`` are always printed regardless of whether ``allowed`` is set.
         """
         allowed: Optional[List[str]] = self.config.get_allowed_labels()
+        or_groups = self.config.get_required_label_groups()
 
         if allowed:
             print("Configured labels (from config.yaml):\n")
@@ -90,5 +103,9 @@ class LabelsHandler:
 
             if default_labels:
                 self._print_groups(self._group_labels(default_labels))
-            else:
+            elif not or_groups:
                 print("(no labels configured)")
+
+        if or_groups:
+            print("Required (pick one per group):")
+            self._print_or_groups(or_groups)

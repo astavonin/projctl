@@ -14,7 +14,7 @@ except ImportError as exc:
 from ..config import Config
 from ..exceptions import PlatformError
 from ..utils.gh_runner import run_gh_command
-from ..utils.validation import validate_issue_description
+from ..utils.validation import validate_issue_description, validate_required_label_groups
 
 logger = logging.getLogger(__name__)
 
@@ -283,6 +283,17 @@ class GithubIssueCreator:
         id_suffix = f" (id: {yaml_id})" if yaml_id else ""
         logger.info("[github] Creating issue: %s%s", title, id_suffix)
 
+        # Merge and validate labels before any I/O so a bad config cannot
+        # create a persistent side effect (e.g. an orphaned milestone).
+        default_labels = self.config.get_default_labels()
+        issue_labels = issue_config.get("labels", [])
+        if not isinstance(issue_labels, list):
+            issue_labels = []
+        all_labels = list(dict.fromkeys(default_labels + issue_labels))
+
+        # Validate required OR groups — exactly one label per group must be present
+        validate_required_label_groups(all_labels, self.config.get_required_label_groups())
+
         milestone_title: Optional[str] = None
         raw_milestone = issue_config.get("milestone")
         if raw_milestone:
@@ -291,12 +302,6 @@ class GithubIssueCreator:
                 # Ensure the milestone exists; creates it if absent.
                 self._resolve_milestone_number(milestone_title, milestone_cache)
 
-        # Merge config default labels with issue-specific labels (deduplicate, order preserved)
-        default_labels = self.config.get_default_labels()
-        issue_labels = issue_config.get("labels", [])
-        if not isinstance(issue_labels, list):
-            issue_labels = []
-        all_labels = list(dict.fromkeys(default_labels + issue_labels))
         merged_issue_config = {**issue_config, "labels": all_labels}
         cmd = self._build_issue_cmd(merged_issue_config, milestone_title)
 

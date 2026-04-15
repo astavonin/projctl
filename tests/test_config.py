@@ -184,6 +184,113 @@ class TestConfigGetters:
         allowed = config.get_allowed_labels()
         assert allowed is None
 
+    def test_get_default_labels_flat_only(self, temp_dir: Path) -> None:
+        """get_default_labels returns only flat strings, excluding OR groups."""
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {
+                "default_group": "test/group",
+                "labels": {
+                    "default": [
+                        ["type::feature", "type::bug"],
+                        "development-status::backlog",
+                    ],
+                },
+            },
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        config = Config(config_path)
+        labels = config.get_default_labels()
+
+        assert "development-status::backlog" in labels
+        assert "type::feature" not in labels
+        assert "type::bug" not in labels
+
+    def test_get_required_label_groups_returns_or_groups(self, temp_dir: Path) -> None:
+        """get_required_label_groups returns inner lists, excluding flat strings."""
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {
+                "default_group": "test/group",
+                "labels": {
+                    "default": [
+                        ["type::feature", "type::bug"],
+                        "development-status::backlog",
+                        ["priority::high", "priority::low"],
+                    ],
+                },
+            },
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        config = Config(config_path)
+        groups = config.get_required_label_groups()
+
+        assert len(groups) == 2
+        assert ["type::feature", "type::bug"] in groups
+        assert ["priority::high", "priority::low"] in groups
+
+    def test_get_required_label_groups_empty_when_all_flat(self, new_config_path: Path) -> None:
+        """get_required_label_groups returns empty list when default has no OR groups."""
+        config = Config(new_config_path)
+        assert config.get_required_label_groups() == []
+
+    def test_malformed_dict_entry_raises_configuration_error(self, temp_dir: Path) -> None:
+        """A dict item in labels.default raises ConfigurationError at access time."""
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {
+                "default_group": "test/group",
+                "labels": {"default": [{"type::feature": None}]},
+            },
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        config = Config(config_path)
+        with pytest.raises(ConfigurationError, match="unexpected type"):
+            config.get_default_labels()
+
+    def test_empty_or_group_raises_configuration_error(self, temp_dir: Path) -> None:
+        """An empty list item in labels.default raises ConfigurationError."""
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {
+                "default_group": "test/group",
+                "labels": {"default": [[], "development-status::backlog"]},
+            },
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        config = Config(config_path)
+        with pytest.raises(ConfigurationError, match="empty OR group"):
+            config.get_default_labels()
+
+    def test_non_string_inner_item_raises_configuration_error(self, temp_dir: Path) -> None:
+        """A list whose members include a non-string raises ConfigurationError."""
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {
+                "default_group": "test/group",
+                "labels": {"default": [["type::feature", 42]]},
+            },
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        config = Config(config_path)
+        with pytest.raises(ConfigurationError, match="non-string members"):
+            config.get_default_labels()
+
 
 class TestPlatformOverride:
     """Test platform override functionality."""

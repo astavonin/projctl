@@ -84,13 +84,24 @@ platform: gitlab  # or github
 gitlab:
   default_group: "group/project"  # REQUIRED for epic operations
   labels:
-    default: ["type::feature", "development-status::backlog"]  # REQUIRED
+    # REQUIRED — applied to every new issue.
+    # Supports two item types:
+    #   - Plain string: always applied as a default label.
+    #   - Inner list (OR group): exactly one member must be present on each issue.
+    #     Issue creation fails with a clear error if zero or more than one member is present.
+    default:
+      - ["type::feature", "type::bug"]   # OR group — pick exactly one
+      - "development-status::backlog"     # flat label — always applied
     default_epic: ["type::epic"]  # OPTIONAL (only for creating epics)
-    allowed: []  # OPTIONAL (empty = no validation)
+    allowed: []                   # OPTIONAL (empty = no validation)
 
 # GitHub-specific settings
 github:
-  default_org: "organization"
+  repo: "org/repo"   # OPTIONAL — auto-detected from git remote when absent
+  labels:
+    default:
+      - ["type::feature", "type::bug"]
+      - "development-status::backlog"
 
 # Common settings
 common:
@@ -114,6 +125,23 @@ planning_sync:
 - `labels.default_epic` - Only needed when *creating* epics (not for loading)
 - `labels.allowed` (or `allowed_labels` for legacy configs) - For label validation
 - All other sections depend on features used
+
+**OR Group Validation:**
+
+When `labels.default` contains an inner list, it is treated as an OR group. On every `projctl create` run the tool checks that exactly one member of each OR group appears in the final label set (config defaults merged with issue-level labels). If zero or more than one member is found, issue creation is aborted with a `ValueError` before any API call is made.
+
+```yaml
+# Valid — type::bug satisfies the OR group
+labels: ["type::bug"]
+
+# Error — no type:: label present
+labels: ["development-status::in-progress"]
+
+# Error — two members of the same group
+labels: ["type::feature", "type::bug"]
+```
+
+Config errors (empty OR group, non-string members, unexpected types) are caught at config-access time and raise `ConfigurationError` with a descriptive message naming the offending entry.
 
 **Legacy Config Support:**
 
@@ -430,7 +458,7 @@ Display configured labels from the project config, grouped by prefix (`type::`, 
 projctl labels
 ```
 
-Shows `allowed` labels if configured and non-empty; otherwise falls back to `default` labels with a note. GitLab and GitHub.
+Shows `allowed` labels if configured and non-empty; otherwise falls back to `default` labels with a note. OR groups from `labels.default` are always shown at the bottom under "Required (pick one per group)" regardless of whether an `allowed` list is set. GitLab and GitHub.
 
 **Handler:** `handlers/labels.py` — `LabelsHandler` class
 

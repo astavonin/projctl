@@ -1,6 +1,6 @@
 """Input validation helpers."""
 
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 
 def validate_labels(labels: List[str], allowed_labels: Optional[List[str]] = None) -> None:
@@ -36,6 +36,27 @@ def validate_labels(labels: List[str], allowed_labels: Optional[List[str]] = Non
             f"Unknown labels found: {', '.join(unknown_labels)}\n"
             f"Allowed labels are: {', '.join(allowed_labels)}"
         )
+
+
+def validate_required_label_groups(labels: Sequence[str], groups: List[List[str]]) -> None:
+    """Validate that exactly one label from each OR group is present.
+
+    Args:
+        labels: Final label list applied to the issue.
+        groups: OR groups from config. Each group requires exactly one match.
+
+    Raises:
+        ValueError: If a group has no matches or more than one match.
+    """
+    for group in groups:
+        matches = [lbl for lbl in labels if lbl in group]
+        if not matches:
+            raise ValueError(f"Missing required label — exactly one of: {', '.join(group)}")
+        if len(matches) > 1:
+            raise ValueError(
+                f"Conflicting labels — only one of [{', '.join(group)}] is allowed, "
+                f"got: {', '.join(matches)}"
+            )
 
 
 def validate_issue_description(

@@ -3,7 +3,7 @@
 import logging
 import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 try:
     import yaml
@@ -225,21 +225,94 @@ class Config:
         """
         return self.get_platform_config("gitlab").get("default_group")
 
-    def get_default_labels(self) -> List[str]:
-        """Get the default labels to apply to issues.
+    @staticmethod
+    def _validate_raw_default_labels(raw: object) -> List[Union[str, List[str]]]:
+        """Validate and return the raw default-labels list.
+
+        Each item must be either a plain string (flat label) or a non-empty list
+        whose every element is a string (OR group).  Any other shape raises
+        ConfigurationError so silent policy bypass is impossible.
+
+        Args:
+            raw: The value at ``labels.default`` from the YAML config.
 
         Returns:
-            List of default label names.
+            Validated list of flat labels and OR groups.
+
+        Raises:
+            ConfigurationError: If any item has an unexpected type, if an OR group
+                is empty, or if any member inside an OR group is not a string.
         """
-        # Try new format first
+        if not isinstance(raw, list):
+            return []
+        validated: List[Union[str, List[str]]] = []
+        for idx, item in enumerate(raw):
+            if isinstance(item, str):
+                validated.append(item)
+            elif isinstance(item, list):
+                if not item:
+                    raise ConfigurationError(
+                        f"labels.default[{idx}] is an empty OR group — "
+                        "OR groups must contain at least one label"
+                    )
+                bad = [m for m in item if not isinstance(m, str)]
+                if bad:
+                    raise ConfigurationError(
+                        f"labels.default[{idx}] OR group contains non-string members: "
+                        + ", ".join(repr(m) for m in bad)
+                    )
+                validated.append(item)
+            else:
+                raise ConfigurationError(
+                    f"labels.default[{idx}] has unexpected type {type(item).__name__!r} "
+                    "(expected a label string or a list of strings for an OR group)"
+                )
+        return validated
+
+    def _get_raw_default_labels(self) -> List[Union[str, List[str]]]:
+        """Get the raw default labels list, which may contain flat strings and OR groups.
+
+        Returns:
+            Raw list where each item is either a label string or a list of strings
+            representing an OR group (exactly one must be chosen).
+
+        Raises:
+            ConfigurationError: If any entry in ``labels.default`` has an unexpected
+                type, contains an empty OR group, or has non-string OR group members.
+        """
         platform_labels = (
             self.get_platform_config(self.platform).get("labels", {}).get("default", [])
         )
         if platform_labels:
-            return platform_labels  # type: ignore[no-any-return]
+            return self._validate_raw_default_labels(platform_labels)
+        return self._validate_raw_default_labels(
+            self.config_data.get("labels", {}).get("default", [])
+        )
 
-        # Fallback to legacy format
-        return self.config_data.get("labels", {}).get("default", [])  # type: ignore[no-any-return]
+    def get_default_labels(self) -> List[str]:
+        """Get flat default labels that are always applied to every issue.
+
+        OR groups (inner lists) are excluded — use get_required_label_groups() for those.
+
+        Returns:
+            List of label names that are unconditionally applied.
+        """
+        return [item for item in self._get_raw_default_labels() if isinstance(item, str)]
+
+    def get_required_label_groups(self) -> List[List[str]]:
+        """Get OR groups from the default labels config.
+
+        Each group requires exactly one of its members to be present on the issue.
+        Defined as inner lists in the config, e.g.::
+
+            default:
+              - ["type::feature", "type::bug"]   # OR group
+              - "development-status::backlog"     # flat label
+
+        Returns:
+            List of OR groups; each group is a list of mutually-exclusive label choices.
+        """
+        return [item for item in self._get_raw_default_labels() if isinstance(item, list)]
 
     def get_default_epic_labels(self) -> List[str]:
         """Get the default labels to apply to epics.

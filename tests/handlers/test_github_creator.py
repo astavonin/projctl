@@ -364,3 +364,57 @@ class TestMilestoneCaching:
         assert (
             len(milestone_calls) == 1
         ), f"Expected 1 milestone API call, got {len(milestone_calls)}"
+
+
+# ---------------------------------------------------------------------------
+# M3: OR group validation fires before any subprocess call
+# ---------------------------------------------------------------------------
+
+
+class TestOrGroupValidationBeforeSubprocess:
+    """Ensure OR group validation fires before any subprocess call (M3)."""
+
+    def _config_with_or_groups(self, tmp_path: Path) -> Config:
+        cfg_path = tmp_path / "config_org.yaml"
+        cfg_path.write_text(
+            "platform: github\n"
+            "github:\n"
+            "  repo: owner/repo\n"
+            "  labels:\n"
+            "    default:\n"
+            "      - - type::feature\n"
+            "        - type::bug\n"
+            "common:\n"
+            "  issue_template:\n"
+            "    required_sections:\n"
+            "      - Description\n"
+            "      - Acceptance Criteria\n"
+        )
+        return Config(cfg_path)
+
+    @patch("subprocess.run")
+    def test_missing_or_group_raises_before_gh(
+        self, mock_run: Mock, tmp_path: Path
+    ) -> None:
+        """ValueError from OR group validation fires before any gh subprocess call."""
+        config = self._config_with_or_groups(tmp_path)
+        creator = GithubIssueCreator(config, dry_run=False)
+
+        yaml_path = _write_yaml(
+            tmp_path / "issues_no_group.yaml",
+            {
+                "issues": [
+                    {
+                        "title": "Missing group label",
+                        "description": _VALID_DESCRIPTION,
+                        # no type::feature / type::bug — OR group not satisfied
+                        "labels": ["development-status::backlog"],
+                    }
+                ]
+            },
+        )
+
+        with pytest.raises(ValueError, match="Missing required label"):
+            creator.process_yaml_file(yaml_path)
+
+        mock_run.assert_not_called()
