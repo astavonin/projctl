@@ -47,7 +47,10 @@ class TestCreateEpic:
         # Mock successful epic creation
         mock_run.return_value = Mock(stdout='{"id": 456, "iid": 21}', stderr="", returncode=0)
 
-        epic_config = {"title": "Test Epic", "description": "Epic description"}
+        epic_config = {
+            "title": "Test Epic",
+            "description": "# Description\n\nEpic description.",
+        }
 
         result = creator.create_epic(epic_config)
 
@@ -84,7 +87,10 @@ class TestCreateEpic:
         config = Config(new_config_path)
         creator = EpicIssueCreator(config, dry_run=True)
 
-        epic_config = {"title": "Test Epic", "description": "Epic description"}
+        epic_config = {
+            "title": "Test Epic",
+            "description": "# Description\n\nEpic description.",
+        }
 
         result = creator.create_epic(epic_config)
 
@@ -375,7 +381,10 @@ class TestProcessYamlFileMilestone:
                     "title": "Sprint 1",
                     "due_date": "2026-06-30",
                 },
-                "epic": {"title": "My Epic"},
+                "epic": {
+                    "title": "My Epic",
+                    "description": "# Description\n\nEpic overview.",
+                },
                 "issues": [
                     {
                         "title": "First Issue",
@@ -473,7 +482,7 @@ class TestProcessYamlFileMilestone:
 
         yaml_path = self._write_yaml(
             temp_dir / "epic_new.yaml",
-            {"epic": {"title": "Brand New Epic"}},
+            {"epic": {"title": "Brand New Epic", "description": "# Description\n\nNew epic."}},
         )
 
         creator.process_yaml_file(yaml_path)
@@ -561,3 +570,253 @@ class TestOrGroupValidationBeforeSubprocess:
             creator.create_issue(issue_config, epic_id=None)
 
         mock_glab.assert_not_called()
+
+
+class TestCreateEpicDescriptionValidation:
+    """Epic description is validated against required sections before any API call."""
+
+    @patch("subprocess.run")
+    def test_new_epic_valid_description_subprocess_called(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """New epic with valid description proceeds to API call."""
+        # Arrange
+        mock_run.return_value = Mock(stdout='{"id": 456, "iid": 21}', stderr="", returncode=0)
+        config = Config(new_config_path)
+        creator = EpicIssueCreator(config)
+        epic_config = {
+            "title": "Auth Service Refactor",
+            "description": "# Description\n\nRefactor the auth service.",
+        }
+
+        # Act
+        result = creator.create_epic(epic_config)
+
+        # Assert — subprocess was called (validation passed)
+        mock_run.assert_called_once()
+        assert result == "21"
+
+    @patch("subprocess.run")
+    def test_new_epic_description_missing_section_raises_before_subprocess(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """New epic with description missing required section raises ValueError before subprocess."""
+        # Arrange
+        config = Config(new_config_path)
+        creator = EpicIssueCreator(config)
+        epic_config = {
+            "title": "Auth Service Refactor",
+            "description": "Some text without a section header.",
+        }
+
+        # Act / Assert
+        with pytest.raises(ValueError, match="Epic"):
+            creator.create_epic(epic_config)
+
+        mock_run.assert_not_called()
+
+    @patch("subprocess.run")
+    def test_new_epic_empty_description_raises_before_subprocess(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """New epic with empty description raises ValueError before subprocess."""
+        # Arrange
+        config = Config(new_config_path)
+        creator = EpicIssueCreator(config)
+        epic_config = {"title": "Auth Service Refactor", "description": ""}
+
+        # Act / Assert
+        with pytest.raises(ValueError, match="Epic"):
+            creator.create_epic(epic_config)
+
+        mock_run.assert_not_called()
+
+    def test_existing_epic_id_skips_validation(self, new_config_path: Path) -> None:
+        """Existing epic (id: present) returns immediately — no validation, no subprocess."""
+        # Arrange
+        config = Config(new_config_path)
+        creator = EpicIssueCreator(config)
+        epic_config = {"id": 42}
+
+        # Act
+        result = creator.create_epic(epic_config)
+
+        # Assert — returned the ID directly without touching description
+        assert result == "42"
+
+    @patch("subprocess.run")
+    def test_dry_run_invalid_description_raises_before_dry_run(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """Dry-run with invalid epic description raises ValueError (validation is pre-dry-run)."""
+        # Arrange
+        config = Config(new_config_path)
+        creator = EpicIssueCreator(config, dry_run=True)
+        epic_config = {
+            "title": "Auth Service Refactor",
+            "description": "No section headers here.",
+        }
+
+        # Act / Assert
+        with pytest.raises(ValueError, match="Epic"):
+            creator.create_epic(epic_config)
+
+        mock_run.assert_not_called()
+
+
+class TestRequiredIssueFieldsValidation:
+    """Config-driven required-field validation fires before any glab subprocess call."""
+
+    def _config_with_required_fields(self, tmp_path: Path, required_fields: list) -> Config:
+        """Write a GitLab config with given issue required_fields and return Config."""
+        import yaml as _yaml  # local import to avoid shadowing module-level yaml
+
+        cfg_path = tmp_path / "config.yaml"
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            _yaml.dump(
+                {
+                    "platform": "gitlab",
+                    "gitlab": {
+                        "default_group": "g/p",
+                        "labels": {
+                            "default": ["type::feature", "development-status::backlog"],
+                            "allowed": [
+                                "type::feature",
+                                "type::bug",
+                                "development-status::backlog",
+                            ],
+                        },
+                    },
+                    "common": {
+                        "issue_template": {
+                            "required_sections": ["Description", "Acceptance Criteria"],
+                            "required_fields": required_fields,
+                        }
+                    },
+                },
+                f,
+            )
+        return Config(cfg_path)
+
+    _VALID_DESCRIPTION = "# Description\n\nContent\n\n# Acceptance Criteria\n\n- AC1"
+
+    @patch("projctl.handlers.creator.run_glab_command")
+    def test_missing_weight_required_raises_before_glab(
+        self, mock_glab: Mock, tmp_path: Path
+    ) -> None:
+        """Issue missing weight, required_fields=['weight'] → ValueError before glab called."""
+        # Arrange
+        config = self._config_with_required_fields(tmp_path, ["weight"])
+        creator = EpicIssueCreator(config, dry_run=False)
+        issue_config = {
+            "title": "No Weight Issue",
+            "description": self._VALID_DESCRIPTION,
+            # weight intentionally absent
+        }
+
+        # Act / Assert
+        with pytest.raises(ValueError, match="missing required 'weight' field"):
+            creator.create_issue(issue_config, epic_id=None)
+
+        mock_glab.assert_not_called()
+
+    @patch("projctl.handlers.creator.run_glab_command")
+    def test_missing_weight_opted_out_no_exception(
+        self, mock_glab: Mock, tmp_path: Path
+    ) -> None:
+        """Issue missing weight, required_fields=[] (opt-out) → no exception; glab called."""
+        # Arrange
+        config = self._config_with_required_fields(tmp_path, [])
+        creator = EpicIssueCreator(config, dry_run=False)
+        issue_config = {
+            "title": "No Weight Issue",
+            "description": self._VALID_DESCRIPTION,
+            # weight absent — but not required
+        }
+        mock_glab.return_value = "https://gitlab.example.com/g/p/-/issues/1"
+
+        # Act — should not raise
+        creator.create_issue(issue_config, epic_id=None)
+
+        # Assert — glab was called (validation passed)
+        mock_glab.assert_called()
+
+    @patch("projctl.handlers.creator.run_glab_command")
+    def test_weight_zero_is_valid(self, mock_glab: Mock, tmp_path: Path) -> None:
+        """Issue with weight=0 → no exception (0 is a valid non-negative integer)."""
+        # Arrange
+        config = self._config_with_required_fields(tmp_path, ["weight"])
+        creator = EpicIssueCreator(config, dry_run=False)
+        issue_config = {
+            "title": "Zero Weight Issue",
+            "description": self._VALID_DESCRIPTION,
+            "weight": 0,
+        }
+        mock_glab.return_value = "https://gitlab.example.com/g/p/-/issues/2"
+
+        # Act — should not raise
+        creator.create_issue(issue_config, epic_id=None)
+
+    @patch("projctl.handlers.creator.run_glab_command")
+    def test_weight_true_is_rejected(self, mock_glab: Mock, tmp_path: Path) -> None:
+        """Issue with weight=True (bool) → ValueError before glab called."""
+        # Arrange
+        config = self._config_with_required_fields(tmp_path, ["weight"])
+        creator = EpicIssueCreator(config, dry_run=False)
+        issue_config = {
+            "title": "Bool Weight Issue",
+            "description": self._VALID_DESCRIPTION,
+            "weight": True,
+        }
+
+        # Act / Assert
+        with pytest.raises(ValueError, match="weight must be a non-negative integer"):
+            creator.create_issue(issue_config, epic_id=None)
+
+        mock_glab.assert_not_called()
+
+    @patch("projctl.handlers.creator.run_glab_command")
+    def test_valid_weight_eight_no_exception(self, mock_glab: Mock, tmp_path: Path) -> None:
+        """Issue with weight=8 → no exception."""
+        # Arrange
+        config = self._config_with_required_fields(tmp_path, ["weight"])
+        creator = EpicIssueCreator(config, dry_run=False)
+        issue_config = {
+            "title": "Valid Weight Issue",
+            "description": self._VALID_DESCRIPTION,
+            "weight": 8,
+        }
+        mock_glab.return_value = "https://gitlab.example.com/g/p/-/issues/3"
+
+        # Act — should not raise
+        creator.create_issue(issue_config, epic_id=None)
+
+    def test_create_epic_empty_required_fields_no_exception(self, tmp_path: Path) -> None:
+        """create_epic with required_fields=[] in config → no exception (no-op loop smoke test)."""
+        # Arrange
+        import yaml as _yaml
+
+        cfg_path = tmp_path / "epic_config.yaml"
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            _yaml.dump(
+                {
+                    "platform": "gitlab",
+                    "gitlab": {"default_group": "g/p"},
+                    "common": {
+                        "epic_template": {
+                            "required_sections": ["Description"],
+                            "required_fields": [],
+                        }
+                    },
+                },
+                f,
+            )
+        config = Config(cfg_path)
+        creator = EpicIssueCreator(config, dry_run=True)
+        epic_config = {
+            "title": "Smoke Epic",
+            "description": "# Description\n\nEpic description.",
+        }
+
+        # Act — should not raise
+        creator.create_epic(epic_config)

@@ -13,7 +13,28 @@ except ImportError as exc:
 from .utils.config_migration import transform_issue_template
 from .utils.git_helpers import get_current_repo_path
 
+# Known field names per template; unknown entries emit a UserWarning via _warn_unknown_fields.
+_KNOWN_ISSUE_FIELDS: frozenset[str] = frozenset({"weight"})
+# Empty: no epic field names are supported yet (reserved for future extension).
+_KNOWN_EPIC_FIELDS: frozenset[str] = frozenset()
+_KNOWN_MR_FIELDS: frozenset[str] = frozenset({"reviewers", "labels"})
+
 logger = logging.getLogger(__name__)
+
+
+def _warn_unknown_fields(
+    fields: List[str], known: frozenset, template_name: str
+) -> None:
+    """Emit a warning for unrecognised field names in required_fields."""
+    unknown = [f for f in fields if f not in known]
+    if unknown:
+        # stacklevel=3: caller → getter (get_required_*_fields) → _warn_unknown_fields → warnings.warn
+        warnings.warn(
+            f"Unknown required_fields entries for {template_name}: {unknown!r}. "
+            f"Known names: {sorted(known) if known else '(none)'}. "
+            "They will be ignored.",
+            stacklevel=3,
+        )
 
 
 class ConfigurationError(Exception):
@@ -216,6 +237,95 @@ class Config:
         # Legacy format support (if config wasn't transformed)
         legacy_sections = self.config_data.get("issue_template", {}).get("sections", [])
         return [s["name"] for s in legacy_sections if s.get("required", False)]
+
+    def get_required_epic_sections(self) -> List[str]:
+        """Get required description sections for new epics.
+
+        Reads common.epic_template.required_sections.
+        Returns ["Description"] when the key is absent.
+        Returns [] when the key is present but empty (no validation).
+
+        Returns:
+            List of required section names for epic descriptions.
+        """
+        epic_template = self.get_common_config().get("epic_template", {})
+        if "required_sections" not in epic_template:
+            return ["Description"]
+        return list(epic_template["required_sections"] or [])
+
+    def get_required_mr_sections(self) -> List[str]:
+        """Get required description sections for MRs/PRs.
+
+        Reads common.mr_template.required_sections.
+        Returns ["Summary", "Implementation Details", "How It Was Tested"] when the key is absent.
+        Returns [] when the key is present but empty (no validation).
+
+        Returns:
+            List of required section names for MR/PR descriptions.
+        """
+        mr_template = self.get_common_config().get("mr_template", {})
+        if "required_sections" not in mr_template:
+            return ["Summary", "Implementation Details", "How It Was Tested"]
+        return list(mr_template["required_sections"] or [])
+
+    def get_required_issue_fields(self) -> List[str]:
+        """Return required fields for new issues.
+
+        Platform-aware defaults:
+        - GitLab: ["weight"] when key absent — preserves existing behaviour.
+        - GitHub: [] when key absent — GitHub issues have no weight concept.
+
+        Returns [] when required_fields is present but empty (explicit opt-out).
+        Emits warnings.warn for unrecognised field names.
+        """
+        issue_template = self.get_common_config().get("issue_template", {})
+        if "required_fields" not in issue_template:
+            return ["weight"] if self.platform == "gitlab" else []
+        fields = issue_template["required_fields"] or []
+        if not isinstance(fields, list):
+            raise ConfigurationError(
+                f"issue_template.required_fields must be a list, "
+                f"got {type(fields).__name__!r}"
+            )
+        _warn_unknown_fields(fields, _KNOWN_ISSUE_FIELDS, "issue_template")
+        return list(fields)
+
+    def get_required_epic_fields(self) -> List[str]:
+        """Return required fields for new epics.
+
+        Returns [] when the key is absent or explicitly empty.
+        Emits warnings.warn for unrecognised field names.
+        """
+        epic_template = self.get_common_config().get("epic_template", {})
+        if "required_fields" not in epic_template:
+            return []
+        fields = epic_template["required_fields"] or []
+        if not isinstance(fields, list):
+            raise ConfigurationError(
+                f"epic_template.required_fields must be a list, "
+                f"got {type(fields).__name__!r}"
+            )
+        _warn_unknown_fields(fields, _KNOWN_EPIC_FIELDS, "epic_template")
+        return list(fields)
+
+    def get_required_mr_fields(self) -> List[str]:
+        """Return required fields for MR/PR creation.
+
+        Returns [] when the key is absent or explicitly empty.
+        Supported names: "reviewers", "labels".
+        Emits warnings.warn for unrecognised field names.
+        """
+        mr_template = self.get_common_config().get("mr_template", {})
+        if "required_fields" not in mr_template:
+            return []
+        fields = mr_template["required_fields"] or []
+        if not isinstance(fields, list):
+            raise ConfigurationError(
+                f"mr_template.required_fields must be a list, "
+                f"got {type(fields).__name__!r}"
+            )
+        _warn_unknown_fields(fields, _KNOWN_MR_FIELDS, "mr_template")
+        return list(fields)
 
     def get_default_group(self) -> Optional[str]:
         """Get the default GitLab group path for epic operations.

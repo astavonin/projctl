@@ -14,7 +14,11 @@ except ImportError as exc:
 from ..config import Config
 from ..exceptions import PlatformError
 from ..utils.gh_runner import run_gh_command
-from ..utils.validation import validate_issue_description, validate_required_label_groups
+from ..utils.validation import (
+    apply_required_issue_fields,
+    validate_issue_description,
+    validate_required_label_groups,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -279,6 +283,14 @@ class GithubIssueCreator:
         self._validate_issue_description(issue_config)
 
         title = str(issue_config["title"])
+
+        required_fields = self.config.get_required_issue_fields()
+        logger.debug("[github] Issue '%s': required_fields=%s", title, required_fields)
+        apply_required_issue_fields(issue_config, title, required_fields)
+        if required_fields:
+            logger.debug(
+                "[github] Issue '%s': required fields validated: %s", title, required_fields
+            )
         yaml_id = issue_config.get("id")
         id_suffix = f" (id: {yaml_id})" if yaml_id else ""
         logger.info("[github] Creating issue: %s%s", title, id_suffix)

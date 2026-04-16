@@ -418,3 +418,85 @@ class TestOrGroupValidationBeforeSubprocess:
             creator.process_yaml_file(yaml_path)
 
         mock_run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# GitHub required-field validation for issues
+# ---------------------------------------------------------------------------
+
+
+class TestGithubRequiredIssueFields:
+    """GitHub platform: required-field validation is platform-aware."""
+
+    def _make_config_with_required_fields(
+        self, tmp_path: Path, required_fields: list
+    ) -> Config:
+        """Write a GitHub config with explicit required_fields and return Config."""
+        cfg_path = tmp_path / "config_rf.yaml"
+        cfg_path.write_text(
+            "platform: github\n"
+            "github:\n"
+            "  repo: owner/test-repo\n"
+            "common:\n"
+            "  issue_template:\n"
+            "    required_sections:\n"
+            "      - Description\n"
+            "      - Acceptance Criteria\n"
+            f"    required_fields: {required_fields!r}\n"
+        )
+        return Config(cfg_path)
+
+    @patch("subprocess.run")
+    def test_github_default_no_weight_requirement(
+        self, mock_run: Mock, tmp_path: Path
+    ) -> None:
+        """GitHub default config (no required_fields key) → no weight check → no exception."""
+        # Arrange — default _make_config has no required_fields at all
+        config = _make_config(tmp_path)
+        creator = GithubIssueCreator(config, dry_run=True)
+
+        yaml_path = _write_yaml(
+            tmp_path / "issues_no_weight.yaml",
+            {
+                "issues": [
+                    {
+                        "title": "No Weight GitHub Issue",
+                        "description": _VALID_DESCRIPTION,
+                        # weight intentionally absent
+                    }
+                ]
+            },
+        )
+
+        # Act — should not raise (GitHub default: required_fields=[])
+        creator.process_yaml_file(yaml_path)
+
+        assert len(creator.created_issues) == 1
+
+    @patch("subprocess.run")
+    def test_github_explicit_weight_required_raises(
+        self, mock_run: Mock, tmp_path: Path
+    ) -> None:
+        """GitHub config with explicit required_fields=['weight'] → ValueError before subprocess."""
+        # Arrange
+        config = self._make_config_with_required_fields(tmp_path, ["weight"])
+        creator = GithubIssueCreator(config, dry_run=False)
+
+        yaml_path = _write_yaml(
+            tmp_path / "issues_gh_weight.yaml",
+            {
+                "issues": [
+                    {
+                        "title": "No Weight GitHub Issue",
+                        "description": _VALID_DESCRIPTION,
+                        # weight absent — but now explicitly required
+                    }
+                ]
+            },
+        )
+
+        # Act / Assert
+        with pytest.raises(ValueError, match="missing required 'weight' field"):
+            creator.process_yaml_file(yaml_path)
+
+        mock_run.assert_not_called()

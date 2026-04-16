@@ -16,6 +16,7 @@ from ..exceptions import PlatformError
 from ..utils.git_helpers import parse_issue_url
 from ..utils.glab_runner import run_glab_command
 from ..utils.validation import (
+    apply_required_issue_fields,
     validate_issue_description,
     validate_labels,
     validate_required_label_groups,
@@ -102,6 +103,22 @@ class EpicIssueCreator:
 
         # Validate labels against allowed list (if configured)
         self._validate_issue_labels(all_labels)  # Reuse validation logic
+
+        # Validate epic description against required sections
+        validate_issue_description(
+            description=description,
+            required_sections=self.config.get_required_epic_sections(),
+            issue_title=title,
+            entity_type="Epic",
+        )
+
+        required_fields = self.config.get_required_epic_fields()
+        if required_fields:
+            logger.debug(
+                "Epic '%s': required_fields=%s (no field checks currently implemented)",
+                title,
+                required_fields,
+            )
 
         # URL encode the group path
         encoded_group = urllib.parse.quote(self.group, safe="")
@@ -237,19 +254,19 @@ class EpicIssueCreator:
         if "title" not in issue_config:
             raise ValueError("Issue must have a 'title' field")
 
-        if "weight" not in issue_config:
-            raise ValueError(f"Issue '{issue_config['title']}' is missing required 'weight' field")
-        weight = issue_config["weight"]
-        if not isinstance(weight, int) or weight < 0:
-            raise ValueError(
-                f"Issue '{issue_config['title']}' weight must be a non-negative integer, "
-                f"got: {weight!r}"
-            )
+        title = issue_config["title"]
+
+        required_fields = self.config.get_required_issue_fields()
+        logger.debug(
+            "Issue '%s': required_fields=%s", issue_config.get("title"), required_fields
+        )
+        apply_required_issue_fields(issue_config, title, required_fields)
+        if required_fields:
+            logger.debug("Issue '%s': required fields validated: %s", title, required_fields)
 
         # Validate required sections in description
         self._validate_issue_description(issue_config)
 
-        title = issue_config["title"]
         yaml_id = issue_config.get("id")
         id_suffix = f" (id: {yaml_id})" if yaml_id else ""
         logger.info("Creating issue: %s%s", title, id_suffix)
@@ -287,8 +304,9 @@ class EpicIssueCreator:
         # Extract iid from the created issue for dependency tracking
         issue_iid = self._extract_issue_iid_from_url(issue_url)
 
-        # Set weight via API (glab issue create does not support weight as a flag)
-        self._set_issue_weight(issue_url, issue_iid, issue_config["weight"])
+        # Set weight via API when provided (glab issue create does not support weight as a flag)
+        if "weight" in issue_config:
+            self._set_issue_weight(issue_url, issue_iid, issue_config["weight"])
 
         # Track the yaml_id mapping for dependency linking
         if yaml_id:

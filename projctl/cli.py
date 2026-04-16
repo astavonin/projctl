@@ -885,8 +885,8 @@ def cmd_create_mr_dispatch(args) -> int:
         return 1
 
     if config.platform == "github":
-        return cmd_create_pr(args)
-    return cmd_create_mr(args)
+        return cmd_create_pr(args, config)
+    return cmd_create_mr(args, config)
 
 
 def main() -> int:

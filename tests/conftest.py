@@ -151,7 +151,10 @@ def sample_issue_yaml_data() -> Dict[str, Any]:
         Dictionary containing sample issue data.
     """
     return {
-        "epic": {"title": "Test Epic", "description": "Test epic description"},
+        "epic": {
+            "title": "Test Epic",
+            "description": "# Description\n\nTest epic description.",
+        },
         "issues": [
             {
                 "id": "task-1",

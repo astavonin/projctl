@@ -167,7 +167,7 @@ class TestCmdCreateMrDispatch:
     """cmd_create_mr_dispatch selects the correct MR/PR handler based on platform."""
 
     def test_cmd_create_mr_github_uses_gh(self, tmp_path: Path) -> None:
-        """GitHub platform calls cmd_create_pr."""
+        """GitHub platform calls cmd_create_pr with args and config."""
         cfg_path = _write_config(tmp_path, "github")
         args = _args(config=str(cfg_path), title="My PR", dry_run=True)
 
@@ -175,5 +175,7 @@ class TestCmdCreateMrDispatch:
             mock_pr.return_value = 0
             result = cmd_create_mr_dispatch(args)
 
-        mock_pr.assert_called_once_with(args)
+        mock_pr.assert_called_once()
+        call_args = mock_pr.call_args[0]
+        assert call_args[0] is args
         assert result == 0

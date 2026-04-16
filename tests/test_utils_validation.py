@@ -174,6 +174,47 @@ Lower case header.
         with pytest.raises(ValueError, match="Issue 'unknown' has no description"):
             validate_issue_description(description, required)
 
+    def test_validate_description_entity_type_epic_in_error(self) -> None:
+        """entity_type='Epic' appears in error message, not 'Issue'."""
+        # Arrange
+        description = "# Overview\n\nSome text."
+        required = ["Description"]
+
+        # Act / Assert
+        with pytest.raises(ValueError) as exc_info:
+            validate_issue_description(
+                description, required, "Auth Service Refactor", entity_type="Epic"
+            )
+
+        error_text = str(exc_info.value)
+        assert "Epic" in error_text
+        assert "Issue" not in error_text
+
+    def test_validate_description_entity_type_mr_empty_description(self) -> None:
+        """entity_type='MR' appears in error when description is empty."""
+        # Arrange
+        description = ""
+        required = ["Summary"]
+
+        # Act / Assert
+        with pytest.raises(ValueError) as exc_info:
+            validate_issue_description(
+                description, required, "Add adaptive cache", entity_type="MR"
+            )
+
+        error_text = str(exc_info.value)
+        assert "MR" in error_text
+
+    def test_validate_description_default_entity_type_is_issue(self) -> None:
+        """Default entity_type remains 'Issue' — backward compatibility preserved."""
+        # Arrange
+        description = ""
+        required = ["Description"]
+
+        # Act / Assert
+        with pytest.raises(ValueError, match="Issue 'unknown' has no description"):
+            validate_issue_description(description, required)
+
 
 class TestValidateRequiredLabelGroups:
     """Test OR group label validation."""

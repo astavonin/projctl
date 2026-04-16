@@ -3,9 +3,10 @@
 import logging
 from typing import List
 
+from ..config import Config
 from ..exceptions import PlatformError
 from ..utils.gh_runner import run_gh_command
-from ..utils.mr_builder import append_common_mr_flags
+from ..utils.mr_builder import append_common_mr_flags, validate_mr_args
 
 logger = logging.getLogger(__name__)
 
@@ -38,16 +39,18 @@ def _build_create_pr_cmd(args) -> List[str]:
     return cmd
 
 
-def cmd_create_pr(args) -> int:
+def cmd_create_pr(args, config: Config) -> int:
     """Handle the 'create-mr' subcommand for GitHub — create a pull request.
 
     Args:
         args: Parsed command-line arguments.
+        config: Project configuration used for template validation.
 
     Returns:
         Exit code (0 for success, 1 for error).
     """
     try:
+        validate_mr_args(args, config)
         cmd = _build_create_pr_cmd(args)
 
         if args.dry_run:

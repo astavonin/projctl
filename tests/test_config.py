@@ -391,3 +391,563 @@ class TestGetGithubRepo:
         with patch("projctl.config.get_current_repo_path", return_value=None):
             with pytest.raises(ConfigurationError, match="Cannot determine GitHub repository"):
                 config.get_github_repo()
+
+
+class TestGetRequiredEpicSections:
+    """Test get_required_epic_sections() method."""
+
+    def test_key_absent_returns_default(self, temp_dir: Path) -> None:
+        """Returns ['Description'] when epic_template key is absent from config."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {"issue_template": {"required_sections": ["Description"]}},
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+        sections = config.get_required_epic_sections()
+
+        # Assert
+        assert sections == ["Description"]
+
+    def test_key_present_with_values_returns_configured_list(self, temp_dir: Path) -> None:
+        """Returns configured list when epic_template.required_sections is set."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {
+                "epic_template": {"required_sections": ["Overview", "Goals"]},
+            },
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+        sections = config.get_required_epic_sections()
+
+        # Assert
+        assert sections == ["Overview", "Goals"]
+
+    def test_key_present_but_empty_returns_empty_list(self, temp_dir: Path) -> None:
+        """Returns [] when epic_template.required_sections is explicitly empty."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {
+                "epic_template": {"required_sections": []},
+            },
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+        sections = config.get_required_epic_sections()
+
+        # Assert
+        assert sections == []
+
+
+class TestGetRequiredMrSections:
+    """Test get_required_mr_sections() method."""
+
+    def test_key_absent_returns_default(self, temp_dir: Path) -> None:
+        """Returns default MR sections when mr_template key is absent from config."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {"issue_template": {"required_sections": ["Description"]}},
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+        sections = config.get_required_mr_sections()
+
+        # Assert
+        assert sections == ["Summary", "Implementation Details", "How It Was Tested"]
+
+    def test_key_present_with_values_returns_configured_list(self, temp_dir: Path) -> None:
+        """Returns configured list when mr_template.required_sections is set."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {
+                "mr_template": {"required_sections": ["Summary", "Testing"]},
+            },
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+        sections = config.get_required_mr_sections()
+
+        # Assert
+        assert sections == ["Summary", "Testing"]
+
+    def test_key_present_but_empty_returns_empty_list(self, temp_dir: Path) -> None:
+        """Returns [] when mr_template.required_sections is explicitly empty."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {
+                "mr_template": {"required_sections": []},
+            },
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+        sections = config.get_required_mr_sections()
+
+        # Assert
+        assert sections == []
+
+
+class TestGetRequiredFields:
+    """Tests for get_required_issue_fields, get_required_epic_fields, get_required_mr_fields."""
+
+    # -------------------------------------------------------------------
+    # H1 regression: sibling key must not disturb the other sub-key default
+    # -------------------------------------------------------------------
+
+    def test_mr_template_with_only_required_fields_sections_returns_default(
+        self, temp_dir: Path
+    ) -> None:
+        """mr_template present with only required_fields → get_required_mr_sections returns default."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {
+                "mr_template": {"required_fields": ["reviewers"]},
+            },
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+        sections = config.get_required_mr_sections()
+
+        # Assert — required_sections absent under mr_template → default returned
+        assert sections == ["Summary", "Implementation Details", "How It Was Tested"]
+
+    def test_mr_template_with_only_required_sections_fields_returns_empty(
+        self, temp_dir: Path
+    ) -> None:
+        """mr_template present with only required_sections → get_required_mr_fields returns []."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {
+                "mr_template": {"required_sections": ["Summary", "Implementation Details"]},
+            },
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+        fields = config.get_required_mr_fields()
+
+        # Assert — required_fields absent under mr_template → []
+        assert fields == []
+
+    def test_epic_template_with_only_required_fields_sections_returns_default(
+        self, temp_dir: Path
+    ) -> None:
+        """epic_template present with only required_fields → get_required_epic_sections returns default."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {
+                "epic_template": {"required_fields": ["some_field"]},
+            },
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act — suppress the unknown-field warning for the assertion
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            config = Config(config_path)
+            sections = config.get_required_epic_sections()
+
+        # Assert
+        assert sections == ["Description"]
+
+    # -------------------------------------------------------------------
+    # get_required_issue_fields
+    # -------------------------------------------------------------------
+
+    def test_issue_fields_common_absent_gitlab_returns_weight(self, temp_dir: Path) -> None:
+        """common: absent, platform=gitlab → returns ["weight"]."""
+        # Arrange
+        config_data = {"platform": "gitlab", "gitlab": {"default_group": "test/group"}}
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+
+        # Assert
+        assert config.get_required_issue_fields() == ["weight"]
+
+    def test_issue_fields_issue_template_absent_gitlab_returns_weight(
+        self, temp_dir: Path
+    ) -> None:
+        """issue_template absent under common, platform=gitlab → returns ["weight"]."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {},
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+
+        # Assert
+        assert config.get_required_issue_fields() == ["weight"]
+
+    def test_issue_fields_only_required_sections_gitlab_returns_weight(
+        self, temp_dir: Path
+    ) -> None:
+        """issue_template has required_sections only (no required_fields), gitlab → ["weight"]."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {
+                "issue_template": {"required_sections": ["Description", "Acceptance Criteria"]}
+            },
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+
+        # Assert
+        assert config.get_required_issue_fields() == ["weight"]
+
+    def test_issue_fields_empty_required_fields_returns_empty(self, temp_dir: Path) -> None:
+        """required_fields: [] → returns []."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {"issue_template": {"required_fields": []}},
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+
+        # Assert
+        assert config.get_required_issue_fields() == []
+
+    def test_issue_fields_required_fields_weight_returns_weight(self, temp_dir: Path) -> None:
+        """required_fields: ["weight"] → returns ["weight"]."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {"issue_template": {"required_fields": ["weight"]}},
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+
+        # Assert
+        assert config.get_required_issue_fields() == ["weight"]
+
+    def test_issue_fields_github_no_required_fields_returns_empty(self, temp_dir: Path) -> None:
+        """platform=github, required_fields absent → returns []."""
+        # Arrange
+        config_data = {
+            "platform": "github",
+            "github": {"repo": "owner/repo"},
+            "common": {"issue_template": {"required_sections": ["Description"]}},
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+
+        # Assert
+        assert config.get_required_issue_fields() == []
+
+    def test_issue_fields_unknown_name_emits_warning(self, temp_dir: Path) -> None:
+        """Unknown field name in required_fields → warning emitted, field included in return."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {"issue_template": {"required_fields": ["weight", "unknown_field"]}},
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act / Assert
+        config = Config(config_path)
+        with pytest.warns(UserWarning, match="Unknown required_fields"):
+            fields = config.get_required_issue_fields()
+
+        assert "unknown_field" in fields
+
+    # -------------------------------------------------------------------
+    # get_required_epic_fields
+    # -------------------------------------------------------------------
+
+    def test_epic_fields_key_absent_returns_empty(self, temp_dir: Path) -> None:
+        """required_fields key absent from epic_template → []."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {"epic_template": {"required_sections": ["Description"]}},
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+
+        # Assert
+        assert config.get_required_epic_fields() == []
+
+    def test_epic_fields_key_present_with_values_returns_list(self, temp_dir: Path) -> None:
+        """required_fields present with values → returns configured list."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {"epic_template": {"required_fields": ["future_field"]}},
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act / Assert — suppress unknown-field warning
+        config = Config(config_path)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            fields = config.get_required_epic_fields()
+
+        assert fields == ["future_field"]
+
+    def test_epic_fields_key_present_but_empty_returns_empty(self, temp_dir: Path) -> None:
+        """required_fields: [] → []."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {"epic_template": {"required_fields": []}},
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+
+        # Assert
+        assert config.get_required_epic_fields() == []
+
+    # -------------------------------------------------------------------
+    # get_required_mr_fields
+    # -------------------------------------------------------------------
+
+    def test_mr_fields_key_absent_returns_empty(self, temp_dir: Path) -> None:
+        """required_fields key absent from mr_template → []."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {"mr_template": {"required_sections": ["Summary"]}},
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+
+        # Assert
+        assert config.get_required_mr_fields() == []
+
+    def test_mr_fields_key_present_with_values_returns_list(self, temp_dir: Path) -> None:
+        """required_fields: ["reviewers", "labels"] → returns configured list."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {"mr_template": {"required_fields": ["reviewers", "labels"]}},
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+        fields = config.get_required_mr_fields()
+
+        # Assert
+        assert fields == ["reviewers", "labels"]
+
+    def test_mr_fields_key_present_but_empty_returns_empty(self, temp_dir: Path) -> None:
+        """required_fields: [] → []."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {"mr_template": {"required_fields": []}},
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+
+        # Assert
+        assert config.get_required_mr_fields() == []
+
+    def test_mr_fields_unknown_name_emits_warning(self, temp_dir: Path) -> None:
+        """Unknown field name "reviewer" in mr required_fields → warning emitted, included in return."""
+        # Arrange — "reviewer" (singular) is not a known name; "reviewers" (plural) is
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {"mr_template": {"required_fields": ["reviewer"]}},
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act / Assert
+        config = Config(config_path)
+        with pytest.warns(UserWarning, match="Unknown required_fields"):
+            fields = config.get_required_mr_fields()
+
+        assert "reviewer" in fields
+
+    # -------------------------------------------------------------------
+    # M1: type validation for required_fields (scalar → ConfigurationError, null → [])
+    # -------------------------------------------------------------------
+
+    def test_issue_fields_scalar_string_raises_configuration_error(
+        self, temp_dir: Path
+    ) -> None:
+        """required_fields: 'weight' (scalar string) → raises ConfigurationError."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {"issue_template": {"required_fields": "weight"}},
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act / Assert
+        config = Config(config_path)
+        with pytest.raises(ConfigurationError, match="issue_template.required_fields must be a list"):
+            config.get_required_issue_fields()
+
+    def test_issue_fields_null_returns_empty(self, temp_dir: Path) -> None:
+        """required_fields: null (YAML null → Python None) → returns []."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {"issue_template": {"required_fields": None}},
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act
+        config = Config(config_path)
+        fields = config.get_required_issue_fields()
+
+        # Assert — None is handled by `or []`; no error
+        assert fields == []
+
+    def test_epic_fields_scalar_string_raises_configuration_error(
+        self, temp_dir: Path
+    ) -> None:
+        """epic required_fields: 'some_field' (scalar string) → raises ConfigurationError."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {"epic_template": {"required_fields": "some_field"}},
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act / Assert
+        config = Config(config_path)
+        with pytest.raises(ConfigurationError, match="epic_template.required_fields must be a list"):
+            config.get_required_epic_fields()
+
+    def test_mr_fields_scalar_string_raises_configuration_error(
+        self, temp_dir: Path
+    ) -> None:
+        """mr required_fields: 'reviewers' (scalar string) → raises ConfigurationError."""
+        # Arrange
+        config_data = {
+            "platform": "gitlab",
+            "gitlab": {"default_group": "test/group"},
+            "common": {"mr_template": {"required_fields": "reviewers"}},
+        }
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f)
+
+        # Act / Assert
+        config = Config(config_path)
+        with pytest.raises(ConfigurationError, match="mr_template.required_fields must be a list"):
+            config.get_required_mr_fields()

@@ -1,6 +1,6 @@
 """Input validation helpers."""
 
-from typing import List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 
 def validate_labels(labels: List[str], allowed_labels: Optional[List[str]] = None) -> None:
@@ -59,8 +59,55 @@ def validate_required_label_groups(labels: Sequence[str], groups: List[List[str]
             )
 
 
+def validate_issue_weight(issue_config: dict, issue_title: str) -> None:
+    """Validate that an issue's weight field is present and a non-negative integer (not bool).
+
+    Args:
+        issue_config: Issue configuration dict; must contain a 'weight' key.
+        issue_title: Issue title for error messages.
+
+    Raises:
+        ValueError: If 'weight' is absent, a bool, or not a non-negative integer.
+    """
+    if "weight" not in issue_config:
+        raise ValueError(
+            f"Issue '{issue_title}' is missing required 'weight' field. "
+            "Pass a 'weight' value, or remove 'weight' from "
+            "issue_template.required_fields in your config."
+        )
+    weight = issue_config["weight"]
+    if isinstance(weight, bool) or not isinstance(weight, int) or weight < 0:
+        raise ValueError(
+            f"Issue '{issue_title}' weight must be a non-negative integer, got: {weight!r}. "
+            "Pass a 'weight' value, or remove 'weight' from "
+            "issue_template.required_fields in your config."
+        )
+
+
+def apply_required_issue_fields(
+    issue_config: Dict[str, Any],
+    title: str,
+    required_fields: List[str],
+) -> None:
+    """Apply required-field checks for issue creation.
+
+    Args:
+        issue_config: Issue configuration dict.
+        title: Issue title for error messages.
+        required_fields: Field names to enforce (from config.get_required_issue_fields()).
+
+    Raises:
+        ValueError: If a required field is absent or invalid.
+    """
+    if "weight" in required_fields:
+        validate_issue_weight(issue_config, title)
+
+
 def validate_issue_description(
-    description: str, required_sections: List[str], issue_title: str = "unknown"
+    description: str,
+    required_sections: List[str],
+    issue_title: str = "unknown",
+    entity_type: str = "Issue",
 ) -> None:
     """Validate that issue description contains required sections.
 
@@ -68,6 +115,7 @@ def validate_issue_description(
         description: Issue description text.
         required_sections: List of required section names.
         issue_title: Issue title for error messages.
+        entity_type: Entity type label used in error messages (e.g. "Issue", "Epic", "MR").
 
     Raises:
         ValueError: If required sections are missing from description.
@@ -78,7 +126,7 @@ def validate_issue_description(
     if not description:
         missing = ", ".join(required_sections)
         raise ValueError(
-            f"Issue '{issue_title}' has no description. " f"Required sections: {missing}"
+            f"{entity_type} '{issue_title}' has no description. " f"Required sections: {missing}"
         )
 
     missing_sections = []
@@ -89,4 +137,4 @@ def validate_issue_description(
 
     if missing_sections:
         missing = ", ".join(missing_sections)
-        raise ValueError(f"Issue '{issue_title}' missing required sections: {missing}")
+        raise ValueError(f"{entity_type} '{issue_title}' missing required sections: {missing}")

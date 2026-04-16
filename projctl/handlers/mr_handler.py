@@ -4,7 +4,8 @@ import logging
 import subprocess
 from typing import List
 
-from ..utils.mr_builder import append_common_mr_flags
+from ..config import Config
+from ..utils.mr_builder import append_common_mr_flags, validate_mr_args
 
 logger = logging.getLogger(__name__)
 
@@ -38,16 +39,18 @@ def _build_create_mr_cmd(args) -> List[str]:
     return cmd
 
 
-def cmd_create_mr(args) -> int:
+def cmd_create_mr(args, config: Config) -> int:
     """Handle the 'create-mr' subcommand - create merge request from current branch.
 
     Args:
         args: Parsed command-line arguments.
+        config: Project configuration used for template validation.
 
     Returns:
         Exit code (0 for success, 1 for error).
     """
     try:
+        validate_mr_args(args, config)
         cmd = _build_create_mr_cmd(args)
 
         if args.dry_run:
