@@ -901,6 +901,13 @@ def main() -> int:
         description="GitLab Epic and Issue management tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
+Config file search order (first found wins):
+  1. --config <path>                   explicit path
+  2. ./glab_config.yaml                project-local (legacy)
+  3. ./projctl.yaml                    project-local (preferred)
+  4. ~/.config/projctl/config.yaml     user config
+  5. ~/.config/glab_config.yaml        user config (legacy)
+
 Examples:
   %(prog)s create epic_definition.yaml
   %(prog)s load 113
@@ -921,7 +928,7 @@ Documentation:
     parser.add_argument(
         "--config",
         type=str,
-        help="Path to config file (default: ./glab_config.yaml in current directory)",
+        help="Path to config file (overrides automatic search order)",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")

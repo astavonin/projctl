@@ -91,7 +91,12 @@ class LabelsHandler:
         or_groups = self.config.get_required_label_groups()
 
         if allowed:
-            print("Configured labels (from config.yaml):\n")
+            config_name = (
+                self.config.loaded_config_path.name
+                if self.config.loaded_config_path
+                else "config"
+            )
+            print(f"Configured labels (from {config_name}):\n")
             self._print_groups(self._group_labels(allowed))
         else:
             default_labels = self.config.get_default_labels()

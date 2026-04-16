@@ -148,17 +148,17 @@ class TestBackwardCompatibility:
             config = Config()
 
         messages = [str(w.message) for w in warning_list]
-        assert any("legacy config location" in m for m in messages)
+        assert any("legacy config name" in m for m in messages)
         assert config.loaded_config_path == legacy_path
 
-    def test_fallback_to_new_format_when_no_legacy(
+    def test_fallback_to_projctl_yaml_when_no_legacy(
         self, temp_dir: Path, new_config_data: Dict[str, Any], monkeypatch
     ) -> None:
-        """Fallback to config.yaml when glab_config.yaml doesn't exist."""
+        """Fallback to projctl.yaml when glab_config.yaml doesn't exist."""
         monkeypatch.chdir(temp_dir)
 
-        # Create only new format config
-        new_path = temp_dir / "config.yaml"
+        # Create only the preferred-name config
+        new_path = temp_dir / "projctl.yaml"
         with open(new_path, "w", encoding="utf-8") as file:
             yaml.dump(new_config_data, file)
 

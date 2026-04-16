@@ -49,10 +49,10 @@ class Config:
 
     Config file resolution:
     1. If --config is specified: use that path (fail if not found)
-    2. ./glab_config.yaml (project-local legacy, PRIORITY)
-    3. ./config.yaml (project-local new format)
-    4. ~/.config/projctl/config.yaml (user config new)
-    5. ~/.config/glab_config.yaml (user config legacy)
+    2. ./glab_config.yaml (project-local, legacy)
+    3. ./projctl.yaml (project-local, preferred)
+    4. ~/.config/projctl/config.yaml (user config)
+    5. ~/.config/glab_config.yaml (user config, legacy)
     """
 
     def __init__(self, config_path: Optional[Path] = None, platform: Optional[str] = None) -> None:
@@ -79,9 +79,9 @@ class Config:
 
         Search order (preserves backward compatibility):
         1. Explicit --config path if provided
-        2. ./glab_config.yaml (project-local, current behavior)
-        3. ./config.yaml (project-local, new format)
-        4. ~/.config/projctl/config.yaml (user config, new)
+        2. ./glab_config.yaml (project-local, legacy)
+        3. ./projctl.yaml (project-local, preferred)
+        4. ~/.config/projctl/config.yaml (user config)
         5. ~/.config/glab_config.yaml (user config, legacy)
 
         Args:
@@ -106,18 +106,20 @@ class Config:
 
         # Search order for backward compatibility
         search_paths = [
-            Path.cwd() / "glab_config.yaml",  # Project-local legacy (PRIORITY)
-            Path.cwd() / "config.yaml",  # Project-local new format
-            Path.home() / ".config" / "projctl" / "config.yaml",  # User config new
+            Path.cwd() / "glab_config.yaml",  # Project-local legacy
+            Path.cwd() / "projctl.yaml",  # Project-local (preferred)
+            Path.home() / ".config" / "projctl" / "config.yaml",  # User config
             Path.home() / ".config" / "glab_config.yaml",  # User config legacy
         ]
 
+        _legacy_names = {"glab_config.yaml"}
+
         for candidate in search_paths:
             if candidate.exists():
-                if "glab_config.yaml" in str(candidate):
+                if candidate.name in _legacy_names:
                     warnings.warn(
-                        f"Using legacy config location {candidate}. "
-                        f"Consider renaming to config.yaml",
+                        f"Using legacy config name '{candidate.name}'. "
+                        f"Consider renaming to projctl.yaml",
                         DeprecationWarning,
                         stacklevel=2,
                     )

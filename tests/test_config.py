@@ -49,7 +49,7 @@ class TestConfigLoading:
         with open(local_config, "w", encoding="utf-8") as file:
             yaml.dump(new_config_data, file)
 
-        with pytest.warns(DeprecationWarning, match="legacy config location"):
+        with pytest.warns(DeprecationWarning, match="legacy config name"):
             config = Config()
 
         assert config.loaded_config_path == local_config
