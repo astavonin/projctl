@@ -619,9 +619,7 @@ class TestGetRequiredFields:
         # Assert
         assert config.get_required_issue_fields() == ["weight"]
 
-    def test_issue_fields_issue_template_absent_gitlab_returns_weight(
-        self, temp_dir: Path
-    ) -> None:
+    def test_issue_fields_issue_template_absent_gitlab_returns_weight(self, temp_dir: Path) -> None:
         """issue_template absent under common, platform=gitlab → returns ["weight"]."""
         # Arrange
         config_data = {
@@ -876,9 +874,7 @@ class TestGetRequiredFields:
     # M1: type validation for required_fields (scalar → ConfigurationError, null → [])
     # -------------------------------------------------------------------
 
-    def test_issue_fields_scalar_string_raises_configuration_error(
-        self, temp_dir: Path
-    ) -> None:
+    def test_issue_fields_scalar_string_raises_configuration_error(self, temp_dir: Path) -> None:
         """required_fields: 'weight' (scalar string) → raises ConfigurationError."""
         # Arrange
         config_data = {
@@ -892,7 +888,9 @@ class TestGetRequiredFields:
 
         # Act / Assert
         config = Config(config_path)
-        with pytest.raises(ConfigurationError, match="issue_template.required_fields must be a list"):
+        with pytest.raises(
+            ConfigurationError, match="issue_template.required_fields must be a list"
+        ):
             config.get_required_issue_fields()
 
     def test_issue_fields_null_returns_empty(self, temp_dir: Path) -> None:
@@ -914,9 +912,7 @@ class TestGetRequiredFields:
         # Assert — None is handled by `or []`; no error
         assert fields == []
 
-    def test_epic_fields_scalar_string_raises_configuration_error(
-        self, temp_dir: Path
-    ) -> None:
+    def test_epic_fields_scalar_string_raises_configuration_error(self, temp_dir: Path) -> None:
         """epic required_fields: 'some_field' (scalar string) → raises ConfigurationError."""
         # Arrange
         config_data = {
@@ -930,12 +926,12 @@ class TestGetRequiredFields:
 
         # Act / Assert
         config = Config(config_path)
-        with pytest.raises(ConfigurationError, match="epic_template.required_fields must be a list"):
+        with pytest.raises(
+            ConfigurationError, match="epic_template.required_fields must be a list"
+        ):
             config.get_required_epic_fields()
 
-    def test_mr_fields_scalar_string_raises_configuration_error(
-        self, temp_dir: Path
-    ) -> None:
+    def test_mr_fields_scalar_string_raises_configuration_error(self, temp_dir: Path) -> None:
         """mr required_fields: 'reviewers' (scalar string) → raises ConfigurationError."""
         # Arrange
         config_data = {

@@ -22,9 +22,7 @@ _KNOWN_MR_FIELDS: frozenset[str] = frozenset({"reviewers", "labels"})
 logger = logging.getLogger(__name__)
 
 
-def _warn_unknown_fields(
-    fields: List[str], known: frozenset, template_name: str
-) -> None:
+def _warn_unknown_fields(fields: List[str], known: frozenset, template_name: str) -> None:
     """Emit a warning for unrecognised field names in required_fields."""
     unknown = [f for f in fields if f not in known]
     if unknown:
@@ -286,8 +284,7 @@ class Config:
         fields = issue_template["required_fields"] or []
         if not isinstance(fields, list):
             raise ConfigurationError(
-                f"issue_template.required_fields must be a list, "
-                f"got {type(fields).__name__!r}"
+                f"issue_template.required_fields must be a list, " f"got {type(fields).__name__!r}"
             )
         _warn_unknown_fields(fields, _KNOWN_ISSUE_FIELDS, "issue_template")
         return list(fields)
@@ -304,8 +301,7 @@ class Config:
         fields = epic_template["required_fields"] or []
         if not isinstance(fields, list):
             raise ConfigurationError(
-                f"epic_template.required_fields must be a list, "
-                f"got {type(fields).__name__!r}"
+                f"epic_template.required_fields must be a list, " f"got {type(fields).__name__!r}"
             )
         _warn_unknown_fields(fields, _KNOWN_EPIC_FIELDS, "epic_template")
         return list(fields)
@@ -323,8 +319,7 @@ class Config:
         fields = mr_template["required_fields"] or []
         if not isinstance(fields, list):
             raise ConfigurationError(
-                f"mr_template.required_fields must be a list, "
-                f"got {type(fields).__name__!r}"
+                f"mr_template.required_fields must be a list, " f"got {type(fields).__name__!r}"
             )
         _warn_unknown_fields(fields, _KNOWN_MR_FIELDS, "mr_template")
         return list(fields)

@@ -90,9 +90,7 @@ class TestSearchMilestones:
         assert results[0]["title"] == "v1.0 Release"
 
     @patch("subprocess.run")
-    def test_search_milestones_case_insensitive_match(
-        self, mock_run: Mock, tmp_path: Path
-    ) -> None:
+    def test_search_milestones_case_insensitive_match(self, mock_run: Mock, tmp_path: Path) -> None:
         """Query is matched case-insensitively against milestone titles."""
         mock_run.return_value = Mock(stdout=_MILESTONES_JSON, stderr="", returncode=0)
 
@@ -105,9 +103,7 @@ class TestSearchMilestones:
         assert results[0]["title"] == "v1.0 Release"
 
     @patch("subprocess.run")
-    def test_search_milestones_no_match_returns_empty(
-        self, mock_run: Mock, tmp_path: Path
-    ) -> None:
+    def test_search_milestones_no_match_returns_empty(self, mock_run: Mock, tmp_path: Path) -> None:
         """Query with no match returns an empty list."""
         mock_run.return_value = Mock(stdout=_MILESTONES_JSON, stderr="", returncode=0)
 
@@ -122,9 +118,7 @@ class TestSearchMilestones:
         self, mock_run: Mock, tmp_path: Path
     ) -> None:
         """PlatformError from gh command yields an empty list (graceful degradation)."""
-        mock_run.side_effect = subprocess.CalledProcessError(
-            1, ["gh", "api"], stderr="forbidden"
-        )
+        mock_run.side_effect = subprocess.CalledProcessError(1, ["gh", "api"], stderr="forbidden")
 
         config = _make_config(tmp_path)
         handler = GithubSearchHandler(config)

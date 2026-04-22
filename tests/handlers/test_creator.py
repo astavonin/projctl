@@ -551,9 +551,7 @@ class TestOrGroupValidationBeforeSubprocess:
         return Config(cfg_path)
 
     @patch("projctl.handlers.creator.run_glab_command")
-    def test_missing_or_group_raises_before_glab(
-        self, mock_glab: Mock, tmp_path: Path
-    ) -> None:
+    def test_missing_or_group_raises_before_glab(self, mock_glab: Mock, tmp_path: Path) -> None:
         """ValueError from OR group validation fires before any glab subprocess call."""
         config = self._config_with_or_groups(tmp_path)
         creator = EpicIssueCreator(config, dry_run=False)
@@ -721,9 +719,7 @@ class TestRequiredIssueFieldsValidation:
         mock_glab.assert_not_called()
 
     @patch("projctl.handlers.creator.run_glab_command")
-    def test_missing_weight_opted_out_no_exception(
-        self, mock_glab: Mock, tmp_path: Path
-    ) -> None:
+    def test_missing_weight_opted_out_no_exception(self, mock_glab: Mock, tmp_path: Path) -> None:
         """Issue missing weight, required_fields=[] (opt-out) → no exception; glab called."""
         # Arrange
         config = self._config_with_required_fields(tmp_path, [])

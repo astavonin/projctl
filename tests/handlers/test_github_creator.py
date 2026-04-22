@@ -393,9 +393,7 @@ class TestOrGroupValidationBeforeSubprocess:
         return Config(cfg_path)
 
     @patch("subprocess.run")
-    def test_missing_or_group_raises_before_gh(
-        self, mock_run: Mock, tmp_path: Path
-    ) -> None:
+    def test_missing_or_group_raises_before_gh(self, mock_run: Mock, tmp_path: Path) -> None:
         """ValueError from OR group validation fires before any gh subprocess call."""
         config = self._config_with_or_groups(tmp_path)
         creator = GithubIssueCreator(config, dry_run=False)
@@ -428,9 +426,7 @@ class TestOrGroupValidationBeforeSubprocess:
 class TestGithubRequiredIssueFields:
     """GitHub platform: required-field validation is platform-aware."""
 
-    def _make_config_with_required_fields(
-        self, tmp_path: Path, required_fields: list
-    ) -> Config:
+    def _make_config_with_required_fields(self, tmp_path: Path, required_fields: list) -> Config:
         """Write a GitHub config with explicit required_fields and return Config."""
         cfg_path = tmp_path / "config_rf.yaml"
         cfg_path.write_text(
@@ -447,9 +443,7 @@ class TestGithubRequiredIssueFields:
         return Config(cfg_path)
 
     @patch("subprocess.run")
-    def test_github_default_no_weight_requirement(
-        self, mock_run: Mock, tmp_path: Path
-    ) -> None:
+    def test_github_default_no_weight_requirement(self, mock_run: Mock, tmp_path: Path) -> None:
         """GitHub default config (no required_fields key) → no weight check → no exception."""
         # Arrange — default _make_config has no required_fields at all
         config = _make_config(tmp_path)
@@ -474,9 +468,7 @@ class TestGithubRequiredIssueFields:
         assert len(creator.created_issues) == 1
 
     @patch("subprocess.run")
-    def test_github_explicit_weight_required_raises(
-        self, mock_run: Mock, tmp_path: Path
-    ) -> None:
+    def test_github_explicit_weight_required_raises(self, mock_run: Mock, tmp_path: Path) -> None:
         """GitHub config with explicit required_fields=['weight'] → ValueError before subprocess."""
         # Arrange
         config = self._make_config_with_required_fields(tmp_path, ["weight"])

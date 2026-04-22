@@ -205,9 +205,7 @@ class TestLoadPRErrorPath:
     """Error path tests for load_pr."""
 
     @patch("subprocess.run")
-    def test_load_pr_raises_platform_error_on_failure(
-        self, mock_run: Mock, tmp_path: Path
-    ) -> None:
+    def test_load_pr_raises_platform_error_on_failure(self, mock_run: Mock, tmp_path: Path) -> None:
         """CalledProcessError from subprocess propagates as PlatformError."""
         mock_run.side_effect = subprocess.CalledProcessError(
             1, ["gh", "pr", "view"], stderr="not found"
@@ -226,9 +224,7 @@ class TestLoadMilestoneErrorPath:
         self, mock_run: Mock, tmp_path: Path
     ) -> None:
         """CalledProcessError from API call propagates as PlatformError."""
-        mock_run.side_effect = subprocess.CalledProcessError(
-            1, ["gh", "api"], stderr="not found"
-        )
+        mock_run.side_effect = subprocess.CalledProcessError(1, ["gh", "api"], stderr="not found")
         config = _make_config(tmp_path)
         loader = GithubLoader(config)
         with pytest.raises(PlatformError):
@@ -239,9 +235,7 @@ class TestLoadMilestoneIssuesGracefulDegradation:
     """load_milestone returns empty issues list when issue fetch fails (TC8)."""
 
     @patch("subprocess.run")
-    def test_load_milestone_issues_empty_on_failure(
-        self, mock_run: Mock, tmp_path: Path
-    ) -> None:
+    def test_load_milestone_issues_empty_on_failure(self, mock_run: Mock, tmp_path: Path) -> None:
         """When _load_milestone_issues raises PlatformError, issues list is empty."""
 
         def side_effect(cmd, **kwargs):

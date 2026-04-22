@@ -61,6 +61,9 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --cov=projctl --cov-report=term-missing"
+markers = [
+    "integration: marks tests that use real external processes (rsync, git)",
+]
 
 [tool.mypy]
 python_version = "3.9"

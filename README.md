@@ -39,6 +39,7 @@ projctl search issues "streaming"
 
 projctl labels       # show configured labels (grouped by prefix)
 
+projctl sync status  # check drift state (read-only)
 projctl sync push    # push planning → Google Drive
 projctl sync pull    # pull Google Drive → planning
 ```

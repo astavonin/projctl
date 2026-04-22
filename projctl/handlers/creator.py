@@ -257,9 +257,7 @@ class EpicIssueCreator:
         title = issue_config["title"]
 
         required_fields = self.config.get_required_issue_fields()
-        logger.debug(
-            "Issue '%s': required_fields=%s", issue_config.get("title"), required_fields
-        )
+        logger.debug("Issue '%s': required_fields=%s", issue_config.get("title"), required_fields)
         apply_required_issue_fields(issue_config, title, required_fields)
         if required_fields:
             logger.debug("Issue '%s': required fields validated: %s", title, required_fields)

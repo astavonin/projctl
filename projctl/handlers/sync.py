@@ -1,15 +1,127 @@
 """Planning folder sync handler."""
 
+from __future__ import annotations
+
 import logging
 import os
+import re
 import subprocess
-from dataclasses import dataclass
+import sys
+import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..config import Config
 from ..exceptions import PlatformError
 
 logger = logging.getLogger(__name__)
+
+
+def _assert_exclude_shape(patterns: tuple[str, ...]) -> None:
+    """Assert that all rsync exclude patterns are basename-style.
+
+    Basename-style means no '/' (which would make rsync treat it as an
+    anchored path pattern) and no '**' (which is not valid rsync syntax).
+    Both would cause _rsync_itemize to produce different results than what
+    callers expect from the oracle contract.
+
+    Args:
+        patterns: Tuple of rsync exclude patterns to validate.
+
+    Raises:
+        AssertionError: If any pattern contains '/' or '**'.
+    """
+    assert all("/" not in p and "**" not in p for p in patterns), (
+        "RSYNC_EXCLUDES patterns must be rsync basename-style (no '/', no '**'). "
+        "Adding anchored patterns requires upgrading the status command."
+    )
+
+
+RSYNC_EXCLUDES: tuple[str, ...] = ("*.swp", "*~", ".DS_Store")
+_assert_exclude_shape(RSYNC_EXCLUDES)
+
+
+@dataclass(frozen=True)
+class ItemizeEntry:
+    """A single parsed line from rsync --itemize-changes output.
+
+    Attributes:
+        op: Operation code: '<', '>', '.', 'c', 'h', or '*deleting'.
+        kind: File kind: 'f', 'd', 'L', 'D', 'S', 'X', or '' for *deleting.
+        attrs: 9-character attribute block, or '' for *deleting lines.
+        path: File path relative to the rsync source root.
+    """
+
+    op: str
+    kind: str
+    attrs: str
+    path: str
+
+
+# Regex for the *deleting itemize shape.
+# rsync emits exactly three spaces between "*deleting" and the path.
+_DELETING_RE = re.compile(r"^\*deleting\s{3}(?P<path>.+)$")
+
+# Regex for the standard flag-block itemize shape.
+# rsync emits exactly one space between the 11-character flag block and the
+# filename. Using a literal single space (not \s+) preserves leading-space
+# filenames: ">f+++++++++ leading.md" has flag-block + ONE space + " leading.md".
+_FLAGBLOCK_RE = re.compile(r"^(?P<op>[<>.ch])(?P<kind>[fdLDSX])(?P<attrs>\S{9}) (?P<path>.+)$")
+
+# Compiled pattern for the "sent N bytes" summary line (anchored to avoid
+# swallowing arbitrary lines that start with "sent ").
+_SENT_BYTES_RE = re.compile(r"^sent \d+")
+
+# Banner prefixes/strings that should be discarded without error.
+_BANNER_PREFIXES = (
+    "sending incremental file list",
+    "receiving incremental file list",
+    "total size is ",
+    "(DRY RUN)",
+)
+
+
+def _parse_itemize_line(line: str) -> ItemizeEntry | None:
+    """Parse a single line from rsync --itemize-changes stdout.
+
+    Args:
+        line: A raw line from rsync output (trailing newline is stripped).
+
+    Returns:
+        An ItemizeEntry if the line contains transfer/deletion info,
+        or None for blank lines and known banner lines.
+
+    Raises:
+        PlatformError: If the line is non-blank, not a banner, and does not
+            match either expected rsync output shape. This fail-loud policy
+            surfaces rsync format changes before they corrupt classification.
+    """
+    line = line.rstrip("\r\n")
+    if not line:
+        return None
+
+    # Check anchored "sent N bytes" banner before the generic prefix list.
+    if _SENT_BYTES_RE.match(line):
+        return None
+
+    for prefix in _BANNER_PREFIXES:
+        if line.startswith(prefix):
+            return None
+
+    m = _DELETING_RE.match(line)
+    if m:
+        return ItemizeEntry(op="*deleting", kind="", attrs="", path=m.group("path"))
+
+    m = _FLAGBLOCK_RE.match(line)
+    if m:
+        return ItemizeEntry(
+            op=m.group("op"),
+            kind=m.group("kind"),
+            attrs=m.group("attrs"),
+            path=m.group("path"),
+        )
+
+    raise PlatformError(f"Unrecognized rsync itemize line (format may have changed): {line!r}")
 
 
 @dataclass
@@ -171,15 +283,10 @@ class PlanningSyncHandler:
         source_str = f"{source}/"
         target_str = f"{target}/"
 
-        # Build rsync command
-        rsync_cmd = [
-            "rsync",
-            "-av",  # archive mode, verbose
-            "--delete",  # delete files in target that don't exist in source
-            "--exclude=*.swp",  # exclude vim swap files
-            "--exclude=*~",  # exclude backup files
-            "--exclude=.DS_Store",  # exclude macOS metadata
-        ]
+        # Build rsync command using the shared exclude constant for oracle parity
+        rsync_cmd = ["rsync", "-av", "--delete"]
+        for pat in RSYNC_EXCLUDES:
+            rsync_cmd.append(f"--exclude={pat}")
 
         if self.dry_run:
             rsync_cmd.append("--dry-run")
@@ -202,7 +309,7 @@ class PlanningSyncHandler:
                 print(result.stdout)
             else:
                 logger.debug("rsync output: %s", result.stdout)
-                logger.info("✓ %s", description)
+                logger.info("Synced: %s", description)
 
         except subprocess.CalledProcessError as err:
             raise PlatformError(
@@ -212,7 +319,7 @@ class PlanningSyncHandler:
     def push(self) -> None:
         """Push local planning folder to Google Drive.
 
-        Syncs ./planning/ → Google Drive backup location.
+        Syncs ./planning/ to the Google Drive backup location.
 
         Raises:
             PlatformError: If sync fails.
@@ -230,7 +337,7 @@ class PlanningSyncHandler:
         if not self.dry_run:
             self.gdrive_planning_base.mkdir(parents=True, exist_ok=True)
 
-        description = f"Push {self.repo_name} planning → Google Drive"
+        description = f"Push {self.repo_name} planning to Google Drive"
         self._run_rsync(
             source=self.planning_path, target=self.gdrive_repo_path, description=description
         )
@@ -243,7 +350,7 @@ class PlanningSyncHandler:
     def pull(self) -> None:
         """Pull planning folder from Google Drive to local.
 
-        Syncs Google Drive backup → ./planning/
+        Syncs the Google Drive backup to ./planning/
 
         Raises:
             PlatformError: If sync fails or Google Drive folder doesn't exist.
@@ -272,7 +379,7 @@ class PlanningSyncHandler:
         if not self.dry_run and not self.planning_path.exists():
             self.planning_path.mkdir(parents=True, exist_ok=True)
 
-        description = f"Pull {self.repo_name} planning ← Google Drive"
+        description = f"Pull {self.repo_name} planning from Google Drive"
         self._run_rsync(
             source=self.gdrive_repo_path, target=self.planning_path, description=description
         )
@@ -281,3 +388,372 @@ class PlanningSyncHandler:
             print(f"✓ Pulled {self.repo_name} planning from Google Drive")
             print(f"  Remote: {self.gdrive_repo_path}")
             print(f"  Local:  {self.planning_path}")
+
+    def _rsync_itemize(self, source: Path, target: Path) -> list[ItemizeEntry]:
+        """Run rsync in dry-run itemize mode and return parsed entries.
+
+        This is a read-only helper. It always passes -n to rsync so no files
+        are ever written. It is the sole subprocess entry point on the status()
+        code path.
+
+        Args:
+            source: Source directory.
+            target: Target directory.
+
+        Returns:
+            List of parsed ItemizeEntry objects from rsync output.
+
+        Raises:
+            PlatformError: On any rsync error or unrecognised output line.
+        """
+        source_str = f"{source}/"
+        target_str = f"{target}/"
+
+        cmd = ["rsync", "-avn", "--delete", "--itemize-changes"]
+        for pat in RSYNC_EXCLUDES:
+            cmd.append(f"--exclude={pat}")
+        cmd.extend([source_str, target_str])
+
+        logger.debug("Executing itemize rsync: %s", " ".join(cmd))
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "LC_ALL": "C"},
+                check=False,
+            )
+        except (FileNotFoundError, OSError) as err:
+            # rsync binary not found or OS-level failure (fd exhaustion, etc.)
+            raise PlatformError(
+                f"rsync is not installed or not available in PATH.\n\n"
+                f"Install rsync:\n"
+                f"  Ubuntu/Debian: sudo apt install rsync\n"
+                f"  macOS: brew install rsync (or use built-in version)\n"
+                f"Error: {err}"
+            ) from err
+
+        rc = result.returncode
+        stderr = result.stderr.strip()
+
+        if rc == 0:
+            if stderr:
+                raise PlatformError(
+                    f"rsync exited 0 but wrote to stderr (itemize listing may be incomplete):\n"
+                    f"{stderr}"
+                )
+            entries: list[ItemizeEntry] = []
+            for line in result.stdout.splitlines():
+                entry = _parse_itemize_line(line)
+                if entry is not None:
+                    entries.append(entry)
+            return entries
+
+        if rc == 23:
+            raise PlatformError(
+                f"rsync reported partial transfer due to error (exit 23).\n"
+                f"The itemize listing is incomplete and cannot be trusted.\n"
+                f"stderr: {stderr}"
+            )
+
+        if rc == 24:
+            raise PlatformError(
+                f"rsync reported that some source files vanished during the scan (exit 24).\n"
+                f"Retry once your filesystem edits have settled.\n"
+                f"stderr: {stderr}"
+            )
+
+        raise PlatformError(f"rsync failed with exit code {rc}.\n" f"stderr: {stderr}")
+
+    def _classify_drift(
+        self,
+        push_entries: list[ItemizeEntry],
+        pull_entries: list[ItemizeEntry],
+    ) -> "DriftClassification":
+        """Classify drift state from two rsync itemize entry lists.
+
+        Args:
+            push_entries: Entries from the local-to-remote dry-run invocation.
+            pull_entries: Entries from the remote-to-local dry-run invocation.
+
+        Returns:
+            A DriftClassification with state, transfer/delete path lists, and
+            mtime_only_count (the number of *unique* paths across both directions
+            that differ only in timestamp or permissions).
+        """
+        push_transfers: list[str] = []
+        push_deletes: list[str] = []
+        pull_transfers: list[str] = []
+        pull_deletes: list[str] = []
+        # Collect unique paths flagged as mtime/perms-only across both directions.
+        mtime_only_paths: set[str] = set()
+
+        for entry in push_entries:
+            if entry.op in ("<", ">") and entry.kind == "f":
+                push_transfers.append(entry.path)
+                if _is_timestamp_or_perms_only(entry.attrs):
+                    mtime_only_paths.add(entry.path)
+            elif entry.op == "*deleting":
+                push_deletes.append(entry.path)
+
+        for entry in pull_entries:
+            if entry.op in ("<", ">") and entry.kind == "f":
+                pull_transfers.append(entry.path)
+                if _is_timestamp_or_perms_only(entry.attrs):
+                    mtime_only_paths.add(entry.path)
+            elif entry.op == "*deleting":
+                pull_deletes.append(entry.path)
+
+        push_transfers = sorted(push_transfers)
+        push_deletes = sorted(push_deletes)
+        pull_transfers = sorted(pull_transfers)
+        pull_deletes = sorted(pull_deletes)
+
+        if push_transfers and pull_transfers:
+            state = "diverged"
+        elif push_transfers:
+            state = "local-ahead"
+        elif pull_transfers:
+            state = "remote-ahead"
+        else:
+            state = "in-sync"
+
+        return DriftClassification(
+            state=state,
+            push_transfers=push_transfers,
+            push_deletes=push_deletes,
+            pull_transfers=pull_transfers,
+            pull_deletes=pull_deletes,
+            mtime_only_count=len(mtime_only_paths),
+        )
+
+    def _format_status_report(self, classification: "DriftClassification") -> str:
+        """Format the full human-readable status report string.
+
+        This is a pure function: given a DriftClassification it produces the
+        exact string that status() will print. It never writes to any file or
+        stream itself.
+
+        Args:
+            classification: Drift classification produced by _classify_drift.
+
+        Returns:
+            The complete multi-line report string to be printed.
+        """
+        state = classification.state
+        push_transfers = classification.push_transfers
+        push_deletes = classification.push_deletes
+        pull_transfers = classification.pull_transfers
+        pull_deletes = classification.pull_deletes
+        mtime_only_count = classification.mtime_only_count
+
+        lines: list[str] = []
+        lines.append(f"STATUS: {state}")
+        lines.append("")
+        lines.append(f"Local:  {self.planning_path}")
+        lines.append(f"Remote: {self.gdrive_repo_path}")
+        lines.append("")
+
+        n_push = len(push_transfers)
+        n_pull = len(pull_transfers)
+        n_push_del = len(push_deletes)
+        n_pull_del = len(pull_deletes)
+
+        lines.append(
+            f"Summary: {n_push} file(s) would be pushed, {n_pull} file(s) would be pulled."
+        )
+        if push_deletes or pull_deletes:
+            lines.append(
+                f"         {n_push_del} remote file(s) would be deleted,"
+                f" {n_pull_del} local file(s) would be deleted."
+            )
+
+        # Build a set of paths that appear in both directions for annotation.
+        both_sides = set(push_transfers) & set(pull_transfers)
+
+        if push_transfers:
+            lines.append("")
+            lines.append("Local changes to push (new/modified content):")
+            for path in push_transfers:
+                annotation = " [also differs on the other side]" if path in both_sides else ""
+                lines.append(f"  {path}{annotation}")
+
+        if push_deletes:
+            lines.append("")
+            lines.append("Remote files a push would DELETE (present only on remote):")
+            for path in push_deletes:
+                lines.append(f"  {path}")
+
+        if pull_transfers:
+            lines.append("")
+            lines.append("Remote changes to pull (new/modified content):")
+            for path in pull_transfers:
+                annotation = " [also differs on the other side]" if path in both_sides else ""
+                lines.append(f"  {path}{annotation}")
+
+        if pull_deletes:
+            lines.append("")
+            lines.append("Local files a pull would DELETE (present only on local):")
+            for path in pull_deletes:
+                lines.append(f"  {path}")
+
+        if mtime_only_count > 0:
+            lines.append("")
+            lines.append(
+                f"Note: {mtime_only_count} file(s) differ only in timestamp or permissions"
+                f" — content may be identical."
+            )
+            lines.append(
+                "Run 'sync push' or 'sync pull' if you are confident one side is canonical."
+            )
+
+        lines.append("")
+        lines.append("Safe next step:")
+        lines.append(f"  {_safe_next_step(state, n_push, n_push_del, n_pull, n_pull_del)}")
+
+        return "\n".join(lines)
+
+    def status(self) -> None:
+        """Classify drift and print STATUS + human report to stdout.
+
+        Contract: read-only. Makes no mutating filesystem call on
+        planning_path or gdrive_repo_path. Raises PlatformError on
+        genuine errors; returns None on any drift state so cmd_sync
+        exits 0.
+
+        Raises:
+            PlatformError: On rsync errors, missing gdrive_base, or
+                unrecognised rsync output.
+        """
+        self._verify_rsync_available()
+
+        if not self.gdrive_base.exists():
+            raise PlatformError(
+                f"Google Drive not found: {self.gdrive_base}\n\n"
+                f"Verify Google Drive is mounted and path is correct in config."
+            )
+
+        if self.gdrive_repo_path.exists():
+            push_entries = self._rsync_itemize(self.planning_path, self.gdrive_repo_path)
+            pull_entries = self._rsync_itemize(self.gdrive_repo_path, self.planning_path)
+        else:
+            with tempfile.TemporaryDirectory() as tmp:
+                push_entries = self._rsync_itemize(self.planning_path, Path(tmp))
+                pull_entries = self._rsync_itemize(Path(tmp), self.planning_path)
+
+        classification = self._classify_drift(push_entries, pull_entries)
+        print(self._format_status_report(classification))
+        sys.stdout.flush()
+
+
+@dataclass(frozen=True)
+class DriftClassification:
+    """Result of classifying the drift between local and remote planning folders.
+
+    Attributes:
+        state: One of 'in-sync', 'local-ahead', 'remote-ahead', 'diverged'.
+        push_transfers: Sorted list of file paths rsync would transfer on push.
+        push_deletes: Sorted list of file paths rsync would delete on remote.
+        pull_transfers: Sorted list of file paths rsync would transfer on pull.
+        pull_deletes: Sorted list of file paths rsync would delete locally.
+        mtime_only_count: Count of *unique* file paths across both directions
+            that differ only in timestamp or permissions (not content).
+    """
+
+    state: str
+    push_transfers: list[str] = field(default_factory=list)
+    push_deletes: list[str] = field(default_factory=list)
+    pull_transfers: list[str] = field(default_factory=list)
+    pull_deletes: list[str] = field(default_factory=list)
+    mtime_only_count: int = 0
+
+
+def _is_timestamp_or_perms_only(attrs: str) -> bool:
+    """Return True when attrs indicate a timestamp- or permissions-only change.
+
+    The 9-character attribute block maps to rsync's cstpoguax layout:
+      index 0: c — checksum
+      index 1: s — size
+      index 2: t — mtime (timestamp)
+      index 3: p — permissions
+      index 4: o — owner
+      index 5: g — group
+      index 6: u — acl (reserved slot in older rsync)
+      index 7: a — acl
+      index 8: x — extended attributes
+
+    A file qualifies when ALL of the following hold:
+    - attrs[0] is not 'c'/'C': checksum unchanged (no content change detected).
+    - attrs[1] is not 's'/'S': size unchanged (content almost certainly identical).
+    - attrs[2] is 't'/'T' OR attrs[3] is 'p'/'P': mtime or permissions changed.
+    - attrs[4:9] are all in '.' or '+': owner, group, acl, xattr unchanged.
+      Any metadata change beyond mtime/perms means we cannot say "content may be
+      identical" with confidence.
+    - attrs does not start with '+': new files are never mtime/perms-only.
+
+    This is a conservative heuristic: prefer false negatives to false positives.
+
+    Args:
+        attrs: The 9-character attribute block from an ItemizeEntry.
+
+    Returns:
+        True only when the entry is safely identified as timestamp/perms-only.
+    """
+    if len(attrs) != 9:
+        return False
+    # New files ('+'), checksum change ('c'/'C'), or size change ('s'/'S') all
+    # indicate content changed — none qualify as timestamp/perms-only.
+    if attrs[0] in ("+", "c", "C") or attrs[1] in ("s", "S"):
+        return False
+    # At least one of mtime (index 2) or permissions (index 3) must differ.
+    if attrs[2] not in ("t", "T") and attrs[3] not in ("p", "P"):
+        return False
+    # Owner, group, acl, xattr must all be unchanged (positions 4–8).
+    # Any change there means more than just mtime/perms differ.
+    for ch in attrs[4:]:
+        if ch not in (".", "+"):
+            return False
+    return True
+
+
+def _safe_next_step(
+    state: str,
+    n_push: int,
+    n_push_del: int,
+    n_pull: int,
+    n_pull_del: int,
+) -> str:
+    """Return a one-line guidance string for the given drift state.
+
+    Args:
+        state: Drift state string.
+        n_push: Number of files that would be transferred on push.
+        n_push_del: Number of remote files that would be deleted on push.
+        n_pull: Number of files that would be transferred on pull.
+        n_pull_del: Number of local files that would be deleted on pull.
+
+    Returns:
+        A single-line guidance sentence.
+    """
+    if state == "in-sync":
+        return "No sync needed."
+    if state == "local-ahead":
+        return (
+            f"Run 'projctl sync push' (would transfer {n_push} file(s),"
+            f" delete {n_push_del} file(s) on remote)."
+            f" A pull would DELETE {n_push} local file(s)"
+            f" and re-create {n_push_del} file(s) locally."
+        )
+    if state == "remote-ahead":
+        return (
+            f"Run 'projctl sync pull' (would transfer {n_pull} file(s),"
+            f" delete {n_pull_del} file(s) locally)."
+            f" A push would DELETE {n_pull} remote file(s)"
+            f" and re-create {n_pull_del} file(s) on remote."
+        )
+    # diverged
+    return (
+        "Manual reconciliation required."
+        " Neither push nor pull is safe; one side's work would be lost."
+    )

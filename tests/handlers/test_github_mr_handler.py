@@ -238,9 +238,7 @@ class TestCreatePrRequiredFields:
         mock_run.assert_not_called()
 
     @patch("subprocess.run")
-    def test_labels_required_no_label_returns_1_subprocess_not_called(
-        self, mock_run: Mock
-    ) -> None:
+    def test_labels_required_no_label_returns_1_subprocess_not_called(self, mock_run: Mock) -> None:
         """required_fields=['labels'], no --label → cmd_create_pr returns 1, no subprocess."""
         # Arrange
         args = _args(

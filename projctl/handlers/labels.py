@@ -92,9 +92,7 @@ class LabelsHandler:
 
         if allowed:
             config_name = (
-                self.config.loaded_config_path.name
-                if self.config.loaded_config_path
-                else "config"
+                self.config.loaded_config_path.name if self.config.loaded_config_path else "config"
             )
             print(f"Configured labels (from {config_name}):\n")
             self._print_groups(self._group_labels(allowed))

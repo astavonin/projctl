@@ -466,6 +466,9 @@ Shows `allowed` labels if configured and non-empty; otherwise falls back to `def
 
 **Sync commands:**
 ```bash
+# Check drift state before syncing (read-only — run this first)
+projctl sync status
+
 # Push local planning → Google Drive
 projctl sync push
 projctl sync push --dry-run
@@ -473,6 +476,44 @@ projctl sync push --dry-run
 # Pull Google Drive → local planning
 projctl sync pull
 projctl sync pull --dry-run
+```
+
+#### `sync status` — Drift Detection
+
+Reports the relationship between `./planning/` and the Google Drive backup without modifying either side.
+
+**Four drift states:**
+
+| State | Meaning | Safe next action |
+|-------|---------|-----------------|
+| `in-sync` | Both sides identical | Either push or pull is a no-op |
+| `local-ahead` | Local has changes remote does not | Run `sync push` |
+| `remote-ahead` | Remote has changes local does not | Run `sync pull` |
+| `diverged` | Both sides have independent changes | Manual reconciliation required |
+
+**Output contract:**
+- Line 1 of stdout is always exactly one of: `STATUS: in-sync`, `STATUS: local-ahead`, `STATUS: remote-ahead`, `STATUS: diverged`.
+- Exit code 0 for every drift state (including `diverged`). Exit 1 only on genuine errors.
+- The rest of stdout is a human-readable detail block listing files that would be transferred or deleted by a subsequent push or pull.
+
+**Drift oracle:** The classification is forward-looking — it describes what a subsequent `sync push` / `sync pull` would transfer or delete, using rsync's default size+mtime comparison (no content checksum). Consequences:
+- A file with identical content but different timestamps on the two sides is reported as drift. A runtime note is emitted in the detail block when only timestamp or permission attributes differ.
+- A file present only on remote cannot be distinguished from a file deleted locally after a previous push; both classify as `remote-ahead`.
+- An empty directory that exists only on one side produces no drift signal and classifies as `in-sync`.
+
+**Concurrency caveat:** The two rsync dry-runs are not atomic. If either tree is mutated between them, the report may describe a state that did not exist at any single moment. `status` is idempotent — rerunning after edits settle gives the correct result.
+
+**Recommended usage in `/start` workflows:**
+
+Run `sync status` before `sync pull` on every machine start. If the result is `local-ahead` or `diverged`, do NOT pull — show the user the file lists and recommend the appropriate action first.
+
+```bash
+# Recommended /start sequence
+projctl sync status   # read-only check
+# If in-sync or remote-ahead → proceed with pull
+projctl sync pull
+# If local-ahead → push first, then verify
+projctl sync push
 ```
 
 ## Planning Sync Deep Dive

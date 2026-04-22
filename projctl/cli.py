@@ -1,4 +1,9 @@
+# pylint: disable=too-many-lines
+# The module is intentionally large — it is the single CLI wiring point for
+# all subcommands. Splitting it would reduce locality without a clear benefit.
 """Command-line interface for CI Platform Manager."""
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -187,12 +192,16 @@ def cmd_sync(args) -> int:
         config_path = Path(args.config) if args.config else None
         config = Config(config_path)
 
-        handler = PlanningSyncHandler(config, dry_run=args.dry_run)
+        # Use getattr so the status sub-subparser (which has no --dry-run flag)
+        # does not cause an AttributeError here.
+        handler = PlanningSyncHandler(config, dry_run=getattr(args, "dry_run", False))
 
         if args.sync_command == "push":
             handler.push()
         elif args.sync_command == "pull":
             handler.pull()
+        elif args.sync_command == "status":
+            handler.status()
         else:
             logger.error("Unknown sync command: %s", args.sync_command)
             return 1
@@ -674,7 +683,7 @@ def _add_create_mr_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _add_sync_subparser(subparsers: argparse._SubParsersAction) -> None:
-    """Register the 'sync' subcommand with push/pull sub-subcommands."""
+    """Register the 'sync' subcommand with push/pull/status sub-subcommands."""
     p = subparsers.add_parser(
         "sync",
         help="Sync planning folder for current repository with Google Drive",
@@ -685,6 +694,32 @@ def _add_sync_subparser(subparsers: argparse._SubParsersAction) -> None:
     push_p.add_argument("--dry-run", action="store_true", help="Preview sync without executing")
     pull_p = sub.add_parser("pull", help="Pull planning folder from Google Drive to local")
     pull_p.add_argument("--dry-run", action="store_true", help="Preview sync without executing")
+    sub.add_parser(
+        "status",
+        help="Report drift (in-sync | local-ahead | remote-ahead | diverged) — read-only",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Classify drift between ./planning/ and the Google Drive backup without "
+            "modifying either side."
+        ),
+        epilog=(
+            "States:\n"
+            "  in-sync       local and remote contain identical content\n"
+            "  local-ahead   local has changes; safe to run 'projctl sync push'\n"
+            "  remote-ahead  remote has changes; safe to run 'projctl sync pull'\n"
+            "  diverged      both sides changed; manual reconciliation required\n"
+            "\n"
+            "Exit codes:\n"
+            "  0    classification succeeded (any drift state)\n"
+            "  1    genuine error (not in a git repo, rsync missing, Google Drive\n"
+            "       unmounted, partial rsync failure, etc.)\n"
+            "\n"
+            "Drift oracle: what 'sync push'/'sync pull' would transfer or delete,\n"
+            "using rsync's default size+mtime comparison (no content checksum).\n"
+            "Files with identical content but different timestamps are reported\n"
+            "as drift; see the note emitted in the detail section when that occurs."
+        ),
+    )
 
 
 def _add_update_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -889,8 +924,11 @@ def cmd_create_mr_dispatch(args) -> int:
     return cmd_create_mr(args, config)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     """Main entry point for the script.
+
+    Args:
+        argv: Argument list for testing. When None, sys.argv is used.
 
     Returns:
         Exit code (0 for success, 1 for error).
@@ -916,6 +954,7 @@ Examples:
   %(prog)s comment planning/reviews/MR134-review.yaml
   %(prog)s create-mr --title "Add feature X" --draft
   %(prog)s sync push
+  %(prog)s sync status
   %(prog)s update issue 231 --title "New title"
   %(prog)s pipeline-debug
 
@@ -943,10 +982,14 @@ Documentation:
     _add_wiki_subparser(subparsers)
     _add_labels_subparser(subparsers)
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.verbose:
-        logger.setLevel(logging.DEBUG)
+        # Configure root logger so handler-level loggers (e.g. projctl.handlers.sync)
+        # also surface debug/info output under --verbose, not just this module's logger.
+        logging.basicConfig(level=logging.DEBUG, format="%(levelname)s: %(message)s")
+    else:
+        logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
 
     if not args.command:
         parser.print_help()
