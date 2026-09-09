@@ -3,6 +3,7 @@
 # Tests intentionally access protected members to unit-test internal helpers.
 # pylint: disable=protected-access
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -1548,3 +1549,695 @@ class TestCmdUpdateBlockerValidation:
             ]
         )
         assert result == 1
+
+
+# ---------------------------------------------------------------------------
+# update_issue --status (work-item Status field)
+# ---------------------------------------------------------------------------
+
+_STATUS_ISSUE_URL = "https://gitlab.example.com/mygroup/myproject/-/issues/231"
+
+
+def _status_resolve_response(status_names_and_ids, item_type="Issue", extra_types=()):
+    """Build a mocked 'workItems + workItemTypes' GraphQL resolve response.
+
+    Mirrors the shape a GitLab Premium instance returns: workItems(iid)
+    resolves the target's work-item GID and its own type, and the matching
+    entry in workItemTypes carries the live allowedStatuses list.
+    """
+    body = {
+        "data": {
+            "project": {
+                "workItems": {
+                    "nodes": [
+                        {
+                            "id": "gid://gitlab/WorkItem/205512",
+                            "workItemType": {"name": item_type},
+                        }
+                    ]
+                },
+                "workItemTypes": {
+                    "nodes": [
+                        *extra_types,
+                        {
+                            "name": item_type,
+                            "widgetDefinitions": [
+                                {"type": "ASSIGNEES"},
+                                {
+                                    "type": "STATUS",
+                                    "allowedStatuses": [
+                                        {"id": sid, "name": name}
+                                        for name, sid in status_names_and_ids
+                                    ],
+                                },
+                            ],
+                        },
+                    ]
+                },
+            }
+        }
+    }
+    return Mock(stdout=json.dumps(body), stderr="", returncode=0)
+
+
+_DEFAULT_STATUSES = [
+    ("To do", "gid://gitlab/WorkItems::Statuses::SystemDefined::Status/1"),
+    ("In progress", "gid://gitlab/WorkItems::Statuses::SystemDefined::Status/2"),
+    ("Done", "gid://gitlab/WorkItems::Statuses::SystemDefined::Status/3"),
+]
+
+
+class TestUpdateIssueStatus:
+    """Tests for TicketUpdater.update_issue(status=...)."""
+
+    @patch("subprocess.run")
+    def test_status_case_insensitive_match(self, mock_run: Mock, new_config_path: Path) -> None:
+        """A lowercase status name still resolves to the correctly-cased status GID."""
+        resolve_response = _status_resolve_response(_DEFAULT_STATUSES)
+        mutation_response = Mock(
+            stdout='{"data": {"workItemUpdate": {"workItem": {"title": "T"}, "errors": []}}}',
+            stderr="",
+            returncode=0,
+        )
+        mock_run.side_effect = [resolve_response, mutation_response]
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        updater.update_issue(_STATUS_ISSUE_URL, status="in progress")
+
+        assert mock_run.call_count == 2
+        resolve_args = mock_run.call_args_list[0][0][0]
+        fields = [resolve_args[i + 1] for i, a in enumerate(resolve_args) if a == "-f"]
+        assert "fullPath=mygroup/myproject" in fields
+        assert "iid=231" in fields
+
+        mutation_args = mock_run.call_args_list[1][0][0]
+        mutation_fields = [
+            mutation_args[i + 1] for i, a in enumerate(mutation_args) if a == "-f"
+        ]
+        mutation_str = " ".join(mutation_fields)
+        # Field positions, not membership: substring assertions pass when the two
+        # GIDs are transposed, which is the whole contract with GitLab.
+        assert "workItemUpdate(input:" in mutation_str
+        assert 'id: "gid://gitlab/WorkItem/205512"' in mutation_str
+        assert (
+            'statusWidget: { status: '
+            '"gid://gitlab/WorkItems::Statuses::SystemDefined::Status/2" }'
+        ) in mutation_str
+
+    @patch("subprocess.run")
+    def test_status_unknown_name_lists_valid_statuses(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """An unrecognised status name raises ValueError listing every valid name."""
+        mock_run.return_value = _status_resolve_response(_DEFAULT_STATUSES)
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        with pytest.raises(ValueError, match="Unknown status") as excinfo:
+            updater.update_issue(_STATUS_ISSUE_URL, status="Bogus")
+
+        message = str(excinfo.value)
+        assert "To do" in message
+        assert "In progress" in message
+        assert "Done" in message
+        # Only the read-only resolve call happened — no mutation was sent.
+        assert mock_run.call_count == 1
+
+    @patch("subprocess.run")
+    def test_status_empty_allowed_statuses_raises_platform_error(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """A present STATUS widget with an empty allowedStatuses list raises."""
+        mock_run.return_value = _status_resolve_response([])
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        with pytest.raises(PlatformError, match="No Status field is configured"):
+            updater.update_issue(_STATUS_ISSUE_URL, status="In progress")
+
+    @patch("subprocess.run")
+    def test_status_project_not_found_raises_platform_error(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """A null 'project' in the GraphQL response raises PlatformError."""
+        mock_run.return_value = Mock(
+            stdout='{"data": {"project": null}}', stderr="", returncode=0
+        )
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        with pytest.raises(PlatformError, match=r"Project .* was not found"):
+            updater.update_issue(_STATUS_ISSUE_URL, status="In progress")
+
+    @patch("subprocess.run")
+    def test_status_no_status_widget_at_all_raises_platform_error(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """The genuinely-absent case: the type exists but carries no STATUS widget."""
+        body = {
+            "data": {
+                "project": {
+                    "workItems": {
+                        "nodes": [
+                            {
+                                "id": "gid://gitlab/WorkItem/205512",
+                                "workItemType": {"name": "Issue"},
+                            }
+                        ]
+                    },
+                    "workItemTypes": {
+                        "nodes": [
+                            {
+                                "name": "Issue",
+                                "widgetDefinitions": [
+                                    {"type": "ASSIGNEES"},
+                                    {"type": "LABELS"},
+                                ],
+                            }
+                        ]
+                    },
+                }
+            }
+        }
+        mock_run.return_value = Mock(stdout=json.dumps(body), stderr="", returncode=0)
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        with pytest.raises(PlatformError, match="No Status field is configured"):
+            updater.update_issue(_STATUS_ISSUE_URL, status="In progress")
+
+    @patch("subprocess.run")
+    def test_status_no_matching_work_item_type_raises_platform_error(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """The item's type is absent from workItemTypes entirely."""
+        mock_run.return_value = _status_resolve_response(
+            _DEFAULT_STATUSES, item_type="Issue"
+        )
+        body = json.loads(mock_run.return_value.stdout)
+        body["data"]["project"]["workItems"]["nodes"][0]["workItemType"]["name"] = "Incident"
+        mock_run.return_value = Mock(stdout=json.dumps(body), stderr="", returncode=0)
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        with pytest.raises(PlatformError, match="No Status field is configured"):
+            updater.update_issue(_STATUS_ISSUE_URL, status="In progress")
+
+    @patch("subprocess.run")
+    def test_status_issue_not_found_raises_platform_error(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """A valid project with a wrong iid: empty nodes must raise, not IndexError."""
+        body = json.loads(_status_resolve_response(_DEFAULT_STATUSES).stdout)
+        body["data"]["project"]["workItems"]["nodes"] = []
+        mock_run.return_value = Mock(stdout=json.dumps(body), stderr="", returncode=0)
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        with pytest.raises(PlatformError, match=r"Issue #231 was not found"):
+            updater.update_issue(_STATUS_ISSUE_URL, status="In progress")
+
+    @patch("subprocess.run")
+    def test_status_top_level_graphql_errors_raise(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """GitLab reports query errors in an HTTP 200 body, with no `data` at all."""
+        mock_run.return_value = Mock(
+            stdout='{"errors": [{"message": "Forbidden"}]}', stderr="", returncode=0
+        )
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        with pytest.raises(PlatformError, match="GraphQL query failed"):
+            updater.update_issue(_STATUS_ISSUE_URL, status="In progress")
+
+    @patch("subprocess.run")
+    def test_status_null_data_raises_platform_error_not_attributeerror(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """`.get(k, {})` returns the default only for an absent key, never a null one."""
+        mock_run.return_value = Mock(
+            stdout='{"data": null, "errors": [{"message": "x"}]}', stderr="", returncode=0
+        )
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        with pytest.raises(PlatformError):
+            updater.update_issue(_STATUS_ISSUE_URL, status="In progress")
+
+    @patch("subprocess.run")
+    def test_status_mutation_with_no_work_item_is_indeterminate_not_success(
+        self, mock_run: Mock, new_config_path: Path, capsys
+    ) -> None:
+        """Empty errors plus a null work item is a real shape and is NOT a success."""
+        mutation_response = Mock(
+            stdout='{"data": {"workItemUpdate": {"workItem": null, "errors": []}}}',
+            stderr="",
+            returncode=0,
+        )
+        mock_run.side_effect = [
+            _status_resolve_response(_DEFAULT_STATUSES),
+            mutation_response,
+        ]
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        with pytest.raises(PlatformError, match="indeterminate"):
+            updater.update_issue(_STATUS_ISSUE_URL, status="In progress")
+
+        assert "✓" not in capsys.readouterr().out
+
+    @patch("subprocess.run")
+    def test_status_mutation_top_level_errors_raise_not_print_success(
+        self, mock_run: Mock, new_config_path: Path, capsys
+    ) -> None:
+        """A refused write comes back as a top-level errors body with no `data`."""
+        mock_run.side_effect = [
+            _status_resolve_response(_DEFAULT_STATUSES),
+            Mock(
+                stdout='{"errors": [{"message": "Forbidden"}]}', stderr="", returncode=0
+            ),
+        ]
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        with pytest.raises(PlatformError, match="GraphQL query failed"):
+            updater.update_issue(_STATUS_ISSUE_URL, status="In progress")
+
+        assert "✓" not in capsys.readouterr().out
+
+    @patch("subprocess.run")
+    def test_status_dry_run_prints_mutation_without_mutating(
+        self, mock_run: Mock, new_config_path: Path, capsys
+    ) -> None:
+        """Dry run resolves real GIDs and prints the mutation, but never sends it.
+
+        Unlike --assignee/--milestone, whose dry-run preview is a placeholder
+        with no API call at all, --status still performs its one read-only
+        resolve call — that call is also what validates the status name, and
+        showing the operator the literal resolved GIDs is the point of the
+        preview. Only the workItemUpdate mutation itself is skipped.
+        """
+        mock_run.return_value = _status_resolve_response(_DEFAULT_STATUSES)
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config, dry_run=True)
+
+        updater.update_issue(_STATUS_ISSUE_URL, status="In progress")
+
+        assert mock_run.call_count == 1
+        captured = capsys.readouterr()
+        assert "DRY RUN" in captured.out
+        assert 'id: "gid://gitlab/WorkItem/205512"' in captured.out
+        assert (
+            'statusWidget: { status: '
+            '"gid://gitlab/WorkItems::Statuses::SystemDefined::Status/2" }'
+        ) in captured.out
+
+    @patch("projctl.handlers.updater.get_current_repo_path")
+    @patch("subprocess.run")
+    def test_status_bare_ref_resolves_project_from_git_remote(
+        self, mock_run: Mock, mock_repo_path: Mock, new_config_path: Path
+    ) -> None:
+        """A bare issue reference (no URL) resolves fullPath via the git remote."""
+        mock_repo_path.return_value = "mygroup/subgroup/myproject"
+        resolve_response = _status_resolve_response(_DEFAULT_STATUSES)
+        mutation_response = Mock(
+            stdout='{"data": {"workItemUpdate": {"workItem": {"title": "T"}, "errors": []}}}',
+            stderr="",
+            returncode=0,
+        )
+        mock_run.side_effect = [resolve_response, mutation_response]
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        updater.update_issue("523", status="In progress")
+
+        resolve_args = mock_run.call_args_list[0][0][0]
+        fields = [resolve_args[i + 1] for i, a in enumerate(resolve_args) if a == "-f"]
+        assert "fullPath=mygroup/subgroup/myproject" in fields
+        assert "iid=523" in fields
+
+    @patch("projctl.handlers.updater.get_current_repo_path")
+    def test_status_bare_ref_no_git_remote_raises(
+        self, mock_repo_path: Mock, new_config_path: Path
+    ) -> None:
+        """A bare issue reference with no resolvable git remote raises ValueError."""
+        mock_repo_path.return_value = None
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        with pytest.raises(ValueError, match="Cannot determine the project"):
+            updater.update_issue("523", status="In progress")
+
+    @patch("subprocess.run")
+    def test_status_mutation_errors_raise_platform_error(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """A non-empty 'errors' array in the mutation response raises PlatformError."""
+        resolve_response = _status_resolve_response(_DEFAULT_STATUSES)
+        mutation_response = Mock(
+            stdout='{"data": {"workItemUpdate": {"workItem": null, '
+            '"errors": ["Status is not valid"]}}}',
+            stderr="",
+            returncode=0,
+        )
+        mock_run.side_effect = [resolve_response, mutation_response]
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        with pytest.raises(PlatformError, match="GraphQL status update failed"):
+            updater.update_issue(_STATUS_ISSUE_URL, status="In progress")
+
+    @patch("subprocess.run")
+    def test_unknown_status_with_other_fields_writes_nothing(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """A mistyped status must abort before the PUT, not after it.
+
+        Resolving the status after the REST write left the title committed while the
+        command exited 1, so the operator could not tell what had landed.
+        """
+        mock_run.return_value = _status_resolve_response(_DEFAULT_STATUSES)
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        with pytest.raises(ValueError, match="Unknown status"):
+            updater.update_issue(_STATUS_ISSUE_URL, title="New title", status="Bogus")
+
+        assert all("PUT" not in call[0][0] for call in mock_run.call_args_list)
+        # Only the read-only resolve happened.
+        assert mock_run.call_count == 1
+
+    @patch("subprocess.run")
+    def test_missing_status_widget_with_other_fields_writes_nothing(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """The same ordering guarantee for a project with no Status widget."""
+        mock_run.return_value = _status_resolve_response([])
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        with pytest.raises(PlatformError, match="No Status field is configured"):
+            updater.update_issue(_STATUS_ISSUE_URL, state_event="close", status="In progress")
+
+        assert all("PUT" not in call[0][0] for call in mock_run.call_args_list)
+
+    @patch("subprocess.run")
+    def test_status_is_validated_against_the_items_own_work_item_type(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """Tasks share the issue iid namespace but have their own status lifecycle.
+
+        Validating against a hardcoded 'Issue' accepted a name the Task's own
+        lifecycle does not contain, then sent it a GID from the wrong type.
+        """
+        issue_only = {
+            "name": "Issue",
+            "widgetDefinitions": [
+                {
+                    "type": "STATUS",
+                    "allowedStatuses": [
+                        {"id": "gid://gitlab/Custom::Status/38", "name": "Blocked"}
+                    ],
+                }
+            ],
+        }
+        mock_run.return_value = _status_resolve_response(
+            [("In dev", "gid://gitlab/Custom::Status/61")],
+            item_type="Task",
+            extra_types=(issue_only,),
+        )
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        with pytest.raises(ValueError) as excinfo:
+            updater.update_issue(_STATUS_ISSUE_URL, status="Blocked")
+
+        message = str(excinfo.value)
+        assert "Task" in message
+        assert "In dev" in message
+        # The Issue lifecycle's status must not be offered or sent.
+        assert "Custom::Status/38" not in message
+        assert mock_run.call_count == 1
+
+    @patch("subprocess.run")
+    def test_status_valid_for_the_items_own_type_is_applied(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """The positive half: a Task's own status resolves to the Task's GID."""
+        mutation_response = Mock(
+            stdout='{"data": {"workItemUpdate": {"workItem": {"title": "T"}, "errors": []}}}',
+            stderr="",
+            returncode=0,
+        )
+        mock_run.side_effect = [
+            _status_resolve_response(
+                [("In dev", "gid://gitlab/Custom::Status/61")], item_type="Task"
+            ),
+            mutation_response,
+        ]
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        updater.update_issue(_STATUS_ISSUE_URL, status="in dev")
+
+        mutation_args = mock_run.call_args_list[1][0][0]
+        mutation_str = " ".join(mutation_args)
+        assert 'statusWidget: { status: "gid://gitlab/Custom::Status/61" }' in mutation_str
+
+    @patch("subprocess.run")
+    def test_status_matching_uses_unicode_case_folding(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """`.lower()` leaves 'Straße' != 'STRASSE'; a custom lifecycle may use either."""
+        mutation_response = Mock(
+            stdout='{"data": {"workItemUpdate": {"workItem": {"title": "T"}, "errors": []}}}',
+            stderr="",
+            returncode=0,
+        )
+        mock_run.side_effect = [
+            _status_resolve_response([("Straße", "gid://gitlab/Custom::Status/7")]),
+            mutation_response,
+        ]
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        updater.update_issue(_STATUS_ISSUE_URL, status="STRASSE")
+
+        mutation_args = mock_run.call_args_list[1][0][0]
+        assert 'status: "gid://gitlab/Custom::Status/7"' in " ".join(mutation_args)
+
+    @patch("subprocess.run")
+    def test_confirmation_reports_the_servers_canonical_casing(
+        self, mock_run: Mock, new_config_path: Path, capsys
+    ) -> None:
+        """Echoing the typed casing gave no confirmation that the name was matched."""
+        mutation_response = Mock(
+            stdout='{"data": {"workItemUpdate": {"workItem": {"title": "T"}, "errors": []}}}',
+            stderr="",
+            returncode=0,
+        )
+        mock_run.side_effect = [
+            _status_resolve_response(_DEFAULT_STATUSES),
+            mutation_response,
+        ]
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        updater.update_issue(_STATUS_ISSUE_URL, status="in PROGRESS")
+
+        captured = capsys.readouterr()
+        assert "'In progress'" in captured.out
+        assert "in PROGRESS" not in captured.out
+
+    @patch("subprocess.run")
+    def test_status_alone_triggers_no_put_call(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """--status alone does not go through the issue PUT endpoint at all."""
+        resolve_response = _status_resolve_response(_DEFAULT_STATUSES)
+        mutation_response = Mock(
+            stdout='{"data": {"workItemUpdate": {"workItem": {"title": "T"}, "errors": []}}}',
+            stderr="",
+            returncode=0,
+        )
+        mock_run.side_effect = [resolve_response, mutation_response]
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        updater.update_issue(_STATUS_ISSUE_URL, status="In progress")
+
+        for call in mock_run.call_args_list:
+            assert "PUT" not in call[0][0]
+
+
+# ---------------------------------------------------------------------------
+# cmd_update — --status CLI validation
+# ---------------------------------------------------------------------------
+
+
+class TestCmdUpdateStatusValidation:
+    """Tests for cmd_update --status flag validation and dispatch."""
+
+    def _run_cli(self, args_list, side_effect=None):
+        """Invoke cli_main with the given argv, optionally mocking subprocess.run."""
+        old_argv = sys.argv
+        try:
+            sys.argv = args_list
+            if side_effect is None:
+                return cli_main()
+            with patch("subprocess.run", side_effect=side_effect):
+                return cli_main()
+        finally:
+            sys.argv = old_argv
+
+    @pytest.mark.parametrize(
+        "resource, ref", [("mr", "144"), ("epic", "37"), ("milestone", "10")]
+    )
+    def test_status_rejected_for_non_issue_resources(
+        self, new_config_path: Path, caplog, resource: str, ref: str
+    ) -> None:
+        """--status is rejected on every non-issue resource.
+
+        The message, not the exit code: `cmd_update` returns 1 for this argv anyway
+        via the pre-existing "No fields to update" branch, so asserting only the code
+        leaves the guard deletable with the suite green.
+        """
+        with caplog.at_level("ERROR"):
+            result = self._run_cli(
+                [
+                    "projctl", "--config", str(new_config_path),
+                    "update", resource, ref, "--status", "In progress",
+                ]
+            )
+        assert result == 1
+        assert "--status is only valid for issue resources" in caplog.text
+
+    def test_empty_status_is_rejected_by_name_on_an_issue(
+        self, new_config_path: Path, caplog
+    ) -> None:
+        """`--status "$VAR"` with VAR unset must not read as "no field specified"."""
+        with caplog.at_level("ERROR"):
+            result = self._run_cli(
+                [
+                    "projctl", "--config", str(new_config_path),
+                    "update", "issue", _STATUS_ISSUE_URL, "--status", "",
+                ]
+            )
+        assert result == 1
+        assert "--status requires a non-empty status name" in caplog.text
+
+    def test_empty_status_on_an_mr_is_rejected_not_silently_dropped(
+        self, new_config_path: Path, caplog
+    ) -> None:
+        """This exited 0 with the flag silently discarded — a silent accept."""
+        with caplog.at_level("ERROR"):
+            result = self._run_cli(
+                [
+                    "projctl", "--config", str(new_config_path),
+                    "update", "mr", "144", "--title", "T", "--status", "",
+                ]
+            )
+        assert result == 1
+        assert "--status is only valid for issue resources" in caplog.text
+
+    def test_whitespace_only_status_is_rejected(
+        self, new_config_path: Path, caplog
+    ) -> None:
+        """Whitespace would otherwise reach the resolver as Unknown status '   '."""
+        with caplog.at_level("ERROR"):
+            result = self._run_cli(
+                [
+                    "projctl", "--config", str(new_config_path),
+                    "update", "issue", _STATUS_ISSUE_URL, "--status", "   ",
+                ]
+            )
+        assert result == 1
+        assert "--status requires a non-empty status name" in caplog.text
+
+    def test_status_alone_counts_as_update_field(self, new_config_path: Path) -> None:
+        """--status alone (no other flags) satisfies the at-least-one-field rule."""
+        resolve_response = _status_resolve_response(_DEFAULT_STATUSES)
+        mutation_response = Mock(
+            stdout='{"data": {"workItemUpdate": {"workItem": {"title": "T"}, "errors": []}}}',
+            stderr="",
+            returncode=0,
+        )
+
+        result = self._run_cli(
+            [
+                "projctl", "--config", str(new_config_path),
+                "update", "issue", _STATUS_ISSUE_URL, "--status", "In progress",
+            ],
+            side_effect=[resolve_response, mutation_response],
+        )
+        assert result == 0
+
+    def test_status_dry_run_makes_no_mutation_call(self, new_config_path: Path) -> None:
+        """update --dry-run with --status resolves but never sends the mutation."""
+        resolve_response = _status_resolve_response(_DEFAULT_STATUSES)
+
+        result = self._run_cli(
+            [
+                "projctl", "--config", str(new_config_path),
+                "update", "issue", _STATUS_ISSUE_URL,
+                "--status", "In progress", "--dry-run",
+            ],
+            side_effect=[resolve_response],
+        )
+        assert result == 0
+
+    def test_empty_status_rejected_on_github_platform(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        """Truthiness here let `--status ""` through to the GitHub updater silently."""
+        cfg_path = tmp_path / "github_config.yaml"
+        cfg_path.write_text("platform: github\ngithub:\n  repo: owner/repo\n")
+
+        with caplog.at_level("ERROR"):
+            result = self._run_cli(
+                [
+                    "projctl", "--config", str(cfg_path),
+                    "update", "issue", "231", "--status", "",
+                ]
+            )
+        assert result == 1
+        assert "not supported on GitHub" in caplog.text
+
+    def test_status_rejected_on_github_platform(self, tmp_path: Path, caplog) -> None:
+        """--status is rejected outright when the configured platform is GitHub."""
+        cfg_path = tmp_path / "github_config.yaml"
+        cfg_path.write_text("platform: github\ngithub:\n  repo: owner/repo\n")
+
+        with caplog.at_level("ERROR"):
+            result = self._run_cli(
+                [
+                    "projctl", "--config", str(cfg_path),
+                    "update", "issue", "231", "--status", "In progress",
+                ]
+            )
+        assert result == 1
+        assert "not supported on GitHub" in caplog.text

@@ -460,6 +460,10 @@ def _cmd_update_github(args, config) -> int:
         logger.error("--state activate is only valid for GitLab milestones")
         return 1
 
+    if getattr(args, "status", None) is not None:
+        logger.error("--status (work-item Status field) is not supported on GitHub")
+        return 1
+
     updater = GithubUpdater(config=config, dry_run=args.dry_run)
 
     try:
@@ -552,6 +556,15 @@ def cmd_update(args) -> int:  # pylint: disable=too-many-statements
         ):
             logger.error("--add-blocker and --remove-blocker are only valid for issue resources")
             return 1
+        if resource_type != "issue" and getattr(args, "status", None) is not None:
+            logger.error("--status is only valid for issue resources")
+            return 1
+        # Rejected here rather than at the resolver: an empty value reaches GitLab as
+        # "Unknown status ''", which reads like a server verdict on a name the user
+        # never typed. Reachable from any script doing --status "$VAR" unset.
+        if getattr(args, "status", None) is not None and not args.status.strip():
+            logger.error("--status requires a non-empty status name")
+            return 1
 
         # --- M3: Require at least one field to update ---
         if resource_type == "issue":
@@ -569,6 +582,7 @@ def cmd_update(args) -> int:  # pylint: disable=too-many-statements
                     getattr(args, "weight", None) is not None,
                     getattr(args, "add_blocker", None),
                     getattr(args, "remove_blocker", None),
+                    getattr(args, "status", None) is not None,
                 ]
             )
         elif resource_type == "mr":
@@ -626,6 +640,7 @@ def cmd_update(args) -> int:  # pylint: disable=too-many-statements
                     args.epic,
                     args.due_date,
                     getattr(args, "weight", None) is not None,
+                    getattr(args, "status", None) is not None,
                 ]
             )
             if non_link_update:
@@ -642,6 +657,7 @@ def cmd_update(args) -> int:  # pylint: disable=too-many-statements
                     epic=args.epic,
                     weight=getattr(args, "weight", None),
                     due_date=args.due_date,
+                    status=getattr(args, "status", None),
                 )
             if remove_blocker:
                 updater.remove_issue_link(ref, remove_blocker)
@@ -921,6 +937,7 @@ Examples:
   update mr 144 --state close
   update epic 37 --add-label "epic::active"
   update milestone 10 --due-date 2026-04-01
+  update issue 231 --status "In progress"
         """,
     )
     p.add_argument(
@@ -966,6 +983,12 @@ Examples:
         type=str,
         metavar="ISSUE",
         help="Remove 'blocked by' link to ISSUE (issue only, e.g. 252 or #252)",
+    )
+    p.add_argument(
+        "--status",
+        type=str,
+        metavar="STATUS",
+        help="Set the work-item Status field (GitLab Premium; issues only)",
     )
     p.add_argument("--dry-run", action="store_true", help="Preview changes without executing")
 

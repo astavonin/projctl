@@ -4,7 +4,7 @@ import json
 import logging
 import shlex
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..exceptions import PlatformError
 from .cli_runner import (
@@ -195,3 +195,40 @@ def discussion_resolve_endpoint(
         Endpoint string with the `resolved` query parameter applied.
     """
     return f"{discussions_base}/{discussion_id}?resolved={'true' if resolved else 'false'}"
+
+
+def parse_graphql_data(output: str) -> Dict[str, Any]:
+    """Decode a glab GraphQL response and return its 'data' object.
+
+    GitLab's GraphQL endpoint reports query errors in an HTTP 200 body, so the
+    top-level `errors` array must be checked independently of glab's own exit
+    code — a caller that digs straight into `data` reports a refused write as a
+    success. `.get(k, {})` is not enough either: it returns the default only for
+    an *absent* key, so a present-but-null `data` still raises AttributeError on
+    the next hop.
+
+    Promoted here from TimelogHandler so every GraphQL call site shares one
+    decoder rather than re-deriving which shapes are handled.
+
+    Args:
+        output: Raw stdout from `glab api graphql`.
+
+    Returns:
+        The response's `data` object, or an empty dict when it is absent or null.
+
+    Raises:
+        PlatformError: If the output is not valid JSON, decodes to a non-object
+            top level (e.g. a bare JSON array), or carries a top-level `errors`
+            array.
+    """
+    try:
+        resp = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise PlatformError(f"Unexpected glab response: {output[:200]!r}") from exc
+    if not isinstance(resp, dict):
+        raise PlatformError(f"Unexpected glab response: {output[:200]!r}")
+    errors = resp.get("errors")
+    if errors:
+        raise PlatformError(f"GraphQL query failed: {errors}")
+    data = resp.get("data")
+    return data if isinstance(data, dict) else {}

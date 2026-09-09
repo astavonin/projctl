@@ -1,5 +1,10 @@
 """Ticket (issue/MR/epic/milestone) updater handler."""
 
+# pylint: disable=too-many-lines
+# One cohesive class covering four resource types; splitting it purely to satisfy the
+# 1000-line default would scatter update_issue/_mr/_epic/_milestone across modules that
+# share the same reference parsing, label merging, and glab execution helpers.
+
 import json
 import logging
 import urllib.parse
@@ -7,10 +12,36 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import Config
 from ..exceptions import PlatformError
+from ..utils.git_helpers import get_current_repo_path
+from ..utils.glab_runner import parse_graphql_data
 from ..utils.validation import validate_labels
 from .loader import TicketLoader
 
 logger = logging.getLogger(__name__)
+
+# Resolves everything a status update needs in one round trip: the target's
+# work-item GID (for the mutation's `id`), its own work-item TYPE, and every
+# type's live `allowedStatuses` (for `statusWidget.status`).
+#
+# The type must be read from the item rather than assumed: `workItems(iid:)`
+# returns whatever work item holds that iid, and Tasks share the issue iid
+# namespace. Matching against a hardcoded "Issue" therefore validated a Task's
+# status against a lifecycle that is not its own — the two differ in practice
+# (on gitlab-org/gitlab, `Issue` exposes 18 statuses and `Task` 6), so a name
+# valid for one resolves to a GID the other rejects.
+#
+# Allowed statuses are queried rather than hardcoded against GitLab's
+# SystemDefined table so a project or group with a custom status lifecycle (a
+# GitLab Ultimate feature) is matched correctly. On an instance with no custom
+# lifecycle the STATUS widget definition lists the SystemDefined set.
+_WORK_ITEM_STATUS_QUERY = (
+    "query($fullPath: ID!, $iid: String!) { "
+    "project(fullPath: $fullPath) { "
+    "workItems(iid: $iid) { nodes { id workItemType { name } } } "
+    "workItemTypes { nodes { name widgetDefinitions { type "
+    "... on WorkItemWidgetDefinitionStatus { allowedStatuses { id name } } } } } "
+    "} }"
+)
 
 
 class TicketUpdater:
@@ -232,6 +263,187 @@ class TicketUpdater:
         if errors:
             raise PlatformError(f"GraphQL milestone assignment failed: {errors}")
 
+    def _resolve_issue_work_item_and_status(
+        self, project_fullpath: str, iid: str, status_name: str
+    ) -> Tuple[str, str, str]:
+        """Resolve an issue's work-item GID and a status name to its status GID.
+
+        Args:
+            project_fullpath: Literal project path (e.g. "group/project"). The
+                ':fullpath' sentinel used elsewhere for REST calls only expands
+                server-side inside a URL path, not inside a GraphQL variable —
+                callers must already have resolved a real path string (see
+                ``_set_issue_status``).
+            iid: Issue iid.
+            status_name: Status name to resolve, matched case-insensitively.
+
+        Returns:
+            Tuple of (work_item_gid, status_gid, canonical_status_name).
+
+        Raises:
+            PlatformError: If the project or issue cannot be found, or the
+                Issue work item type has no Status widget configured.
+            ValueError: If status_name does not match any allowed status.
+        """
+        # pylint: disable=protected-access
+        # TicketLoader's _run_glab_command is an internal helper shared between
+        # sibling handler classes; no public API exists for command execution.
+        output = self._loader._run_glab_command(
+            [
+                "api",
+                "graphql",
+                "-f",
+                f"query={_WORK_ITEM_STATUS_QUERY}",
+                "-f",
+                f"fullPath={project_fullpath}",
+                "-f",
+                f"iid={iid}",
+            ]
+        )
+        project = parse_graphql_data(output).get("project")
+        if project is None:
+            raise PlatformError(
+                f"Project {project_fullpath!r} was not found, or you do not have "
+                "access to it — check the project path."
+            )
+
+        nodes = (project.get("workItems") or {}).get("nodes") or []
+        if not nodes:
+            raise PlatformError(f"Issue #{iid} was not found in project {project_fullpath!r}.")
+        work_item_gid = str(nodes[0]["id"])
+        # The item's own type, not an assumed "Issue" — see _WORK_ITEM_STATUS_QUERY.
+        item_type = str((nodes[0].get("workItemType") or {}).get("name") or "Issue")
+
+        allowed: List[Dict[str, str]] = []
+        for wi_type in (project.get("workItemTypes") or {}).get("nodes") or []:
+            if wi_type.get("name") != item_type:
+                continue
+            for widget in wi_type.get("widgetDefinitions") or []:
+                if widget.get("type") == "STATUS":
+                    allowed = widget.get("allowedStatuses") or []
+                    break
+            break
+        if not allowed:
+            raise PlatformError(
+                f"No Status field is configured for {item_type} work items in "
+                f"{project_fullpath!r} — this requires GitLab Premium with the Status "
+                "widget enabled, on a GitLab version that exposes it."
+            )
+
+        target = status_name.strip().casefold()
+        for status in allowed:
+            if str(status.get("name", "")).casefold() == target:
+                return work_item_gid, str(status["id"]), str(status.get("name", ""))
+
+        valid_names = ", ".join(str(s.get("name", "")) for s in allowed)
+        raise ValueError(
+            f"Unknown status {status_name!r} for this {item_type}. "
+            f"Valid statuses: {valid_names}"
+        )
+
+    def _resolve_status_update(
+        self, issue_ref: str, status_name: str
+    ) -> Tuple[str, str, str, str, str]:
+        """Resolve a status update to its GIDs and names without writing anything.
+
+        Separated from ``_apply_status_update`` so the caller can validate before
+        committing anything. A mistyped status name is the likeliest failure for
+        this flag and is fully detectable from a read-only query; resolving after
+        the REST PUT left the other fields written and the command exiting 1, with
+        no way for the operator to tell what had landed.
+
+        Args:
+            issue_ref: Issue reference (number, URL, or #number format).
+            status_name: Status name to resolve, matched case-insensitively.
+
+        Returns:
+            Tuple of (iid, work_item_gid, status_gid, canonical_status_name,
+            project_fullpath).
+
+        Raises:
+            PlatformError: If the project/issue cannot be resolved, or no Status
+                widget is configured for the work item's type.
+            ValueError: If status_name does not match any allowed status, or the
+                project cannot be determined for a bare issue reference.
+        """
+        # pylint: disable=protected-access
+        # TicketLoader's reference-parsing methods are internal helpers shared
+        # between sibling handler classes; no public API exists for them.
+        project_path, iid = self._loader._parse_issue_reference(issue_ref)
+        project_fullpath = project_path or get_current_repo_path()
+        if not project_fullpath:
+            raise ValueError(
+                "Cannot determine the project to resolve the Status field against "
+                "— pass a full issue URL, or run from inside a git repository with "
+                "a GitLab remote."
+            )
+
+        work_item_gid, status_gid, canonical = self._resolve_issue_work_item_and_status(
+            project_fullpath, iid, status_name
+        )
+        return iid, work_item_gid, status_gid, canonical, project_fullpath
+
+    def _apply_status_update(
+        self,
+        iid: str,
+        work_item_gid: str,
+        *,
+        status_gid: str,
+        status_name: str,
+        project_fullpath: str,
+    ) -> None:
+        """Send the workItemUpdate mutation for an already-resolved status.
+
+        Unlike the placeholder-only dry-run preview used for --assignee and
+        --milestone elsewhere in this class, dry-run here has already performed the
+        read-only resolution: the resolved GID is exactly what the operator needs
+        to see to trust the preview, and that query has no equivalent to the
+        label-merge GET's cost. Only the mutation itself is skipped.
+
+        Args:
+            iid: Issue iid, for the confirmation line.
+            work_item_gid: Work-item GID from ``_resolve_status_update``.
+            status_gid: Status GID from ``_resolve_status_update``.
+            status_name: Canonical status name from the server, for the
+                confirmation line — not the casing the user typed.
+            project_fullpath: Resolved project, shown in the confirmation so a
+                wrong git-remote resolution is visible rather than silent.
+
+        Raises:
+            PlatformError: If GitLab rejects the mutation.
+        """
+        mutation = (
+            "mutation { workItemUpdate(input: { "
+            f'id: "{work_item_gid}", '
+            f'statusWidget: {{ status: "{status_gid}" }} '
+            "}) { workItem { title } errors } }"
+        )
+
+        if self.dry_run:
+            print(f"[DRY RUN] Would run GraphQL mutation: {mutation}")
+            return
+
+        # pylint: disable=protected-access
+        output = self._loader._run_glab_command(["api", "graphql", "-f", f"query={mutation}"])
+        payload = parse_graphql_data(output).get("workItemUpdate") or {}
+        errors = payload.get("errors") or []
+        if errors:
+            raise PlatformError(f"GraphQL status update failed: {errors}")
+        # An empty `errors` array with no work item is a real GitLab shape and means
+        # the write is indeterminate, not successful — the same guard timelog.py
+        # applies to timelogCreate. Reporting it as done would be unrecoverable,
+        # since nothing downstream re-reads the value.
+        work_item = payload.get("workItem")
+        if not work_item:
+            raise PlatformError(
+                f"GraphQL status update returned no work item for issue #{iid} — "
+                f"the outcome is indeterminate. Verify with: projctl load issue {iid}"
+            )
+        print(
+            f"✓ Set {project_fullpath}#{iid} ({work_item.get('title', '')}) "
+            f"status to {status_name!r}"
+        )
+
     def _resolve_epic_global_id(self, epic_ref: str) -> tuple:
         """Resolve an epic reference to its global database ID and iid.
 
@@ -398,9 +610,9 @@ class TicketUpdater:
         print(f"✓ Removed link between issue #{iid} and #{target_iid}")
 
     def update_issue(  # pylint: disable=too-many-locals,too-many-branches,too-many-arguments
-        # Weight adds one more argument and one more branch, pushing the counts
-        # just above the default pylint thresholds. Extracting a helper would
-        # obscure the single-method read-then-update flow.
+        # Weight and status each add one more argument and one more branch,
+        # pushing the counts above the default pylint thresholds. Extracting a
+        # helper would obscure the single-method read-then-update flow.
         self,
         issue_ref: str,
         *,
@@ -414,6 +626,7 @@ class TicketUpdater:
         epic: Optional[str] = None,
         weight: Optional[int] = None,
         due_date: Optional[str] = None,
+        status: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Update an existing GitLab issue.
 
@@ -429,13 +642,20 @@ class TicketUpdater:
             epic: Epic reference to assign the issue to (e.g. &47), or None to skip.
             weight: Story-point weight (non-negative integer), or None to leave unchanged.
             due_date: Due date in YYYY-MM-DD format, or None to leave unchanged.
+            status: Work-item Status field name (e.g. "In progress"), matched
+                case-insensitively, or None to leave unchanged. GitLab Premium
+                only.
 
         Returns:
             Updated issue data returned by the API.
 
         Raises:
-            PlatformError: If the update fails.
-            ValueError: If the issue reference cannot be parsed.
+            PlatformError: If the update fails, or — for status — the project or
+                issue cannot be resolved or the work item's type has no Status
+                widget. Raised before any write.
+            ValueError: If the issue reference cannot be parsed, if status does not
+                match an allowed status for the work item's type, or if the project
+                cannot be determined for a bare reference. Raised before any write.
         """
         self._validate_labels_add(labels_add)
 
@@ -460,6 +680,13 @@ class TicketUpdater:
             fields["weight"] = weight
         if due_date is not None:
             fields["due_date"] = due_date
+
+        # Resolve the status BEFORE any write. This is a read-only query, and an
+        # unknown name is the likeliest failure for the flag — resolving it after the
+        # PUT left the title or state committed while the command exited 1.
+        status_resolved: Optional[Tuple[str, str, str, str, str]] = None
+        if status is not None:
+            status_resolved = self._resolve_status_update(issue_ref, status)
 
         # Determine whether there are fields to PUT (epic assignment is a
         # separate POST and does not go through the PUT endpoint).
@@ -489,6 +716,15 @@ class TicketUpdater:
                 print(f"[DRY RUN] Would PUT {endpoint} with fields: {fields}")
             if epic is not None:
                 print(f"[DRY RUN] Would assign issue #{iid} to epic &{epic.lstrip('&')}")
+            if status_resolved is not None:
+                s_iid, s_gid, st_gid, st_name, s_path = status_resolved
+                self._apply_status_update(
+                    s_iid,
+                    s_gid,
+                    status_gid=st_gid,
+                    status_name=st_name,
+                    project_fullpath=s_path,
+                )
             return {}
 
         result: Dict[str, Any] = {}
@@ -513,6 +749,16 @@ class TicketUpdater:
 
         if epic is not None:
             self._assign_issue_to_epic(issue_ref, epic)
+
+        if status_resolved is not None:
+            s_iid, s_gid, st_gid, st_name, s_path = status_resolved
+            self._apply_status_update(
+                s_iid,
+                s_gid,
+                status_gid=st_gid,
+                status_name=st_name,
+                project_fullpath=s_path,
+            )
 
         return result
 

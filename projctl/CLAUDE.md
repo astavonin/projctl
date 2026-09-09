@@ -370,6 +370,10 @@ projctl update mr 144 --reviewer bob --target-branch main
 projctl update issue 231 --due-date 2026-04-01
 projctl update milestone 10 --due-date 2026-04-01 --state activate
 
+# Set the work-item Status field (GitLab Premium; issues only)
+projctl update issue 231 --status "In progress"
+projctl update issue 231 --status "In progress" --dry-run
+
 # Preview without executing — no API calls at all
 projctl update issue 231 --dry-run --title "Preview" --add-label "type::fix"
 ```
@@ -399,6 +403,7 @@ projctl update mr https://gitlab.com/group/repo/-/merge_requests/144 ...
 | `--weight N` | issue only | Story-point weight in hours |
 | `--add-blocker ISSUE` | issue only | Add "is blocked by" link to ISSUE (e.g. `252` or `#252`) |
 | `--remove-blocker ISSUE` | issue only | Remove "is blocked by" link to ISSUE |
+| `--status STATUS` | issue only | Set the work-item Status field by name, case-insensitive (e.g. `"In progress"`). GitLab Premium; not supported on GitHub |
 | `--state EVENT` | all (restricted) | State transition (see below) |
 | `--dry-run` | all | Show intent without any API calls |
 
@@ -413,10 +418,15 @@ projctl update mr https://gitlab.com/group/repo/-/merge_requests/144 ...
 **Key behaviors:**
 - `--assignee` / `--reviewer` accept GitLab usernames and are resolved to numeric IDs via `glab api users?username=<name>`.
 - `--milestone` accepts a milestone title or iid and is resolved to the numeric database ID via the milestones API.
-- `--dry-run` performs zero API calls (label reads are also skipped; intent is shown as `<add: [...], remove: [...]>`). `--remove-blocker` is a partial exception: it must read the issue's current links to look up the internal link ID, so dry-run performs one GET.
+- `--dry-run` performs zero API calls (label reads are also skipped; intent is shown as `<add: [...], remove: [...]>`). Two partial exceptions: `--remove-blocker` must read the issue's current links to look up the internal link ID, so dry-run performs one GET; and `--status` performs its read-only GraphQL resolution, since that resolution is also what validates the status name — only the `workItemUpdate` mutation is skipped.
 - `--add-blocker` / `--remove-blocker` accept a plain number, `#N`, or a full issue URL and both target an issue in the same project. Adding a link uses `link_type=is_blocked_by`. Removing a link raises an error if no link matching the target exists.
+- `--status` resolves the allowed status names live via GraphQL (`workItemTypes { ... allowedStatuses }`) rather than a hardcoded table, so a project or group with a custom status lifecycle (GitLab Ultimate) is matched correctly. Matching uses Unicode case folding, so `"STRASSE"` matches a `"Straße"` status. An unknown name lists the valid names and exits non-zero.
+- **`--status` validates against the work item's own type, not a hardcoded `Issue`.** `workItems(iid:)` returns whatever work item holds that iid and Tasks share the issue iid namespace, so a Task is checked against the Task lifecycle — the two genuinely differ. A type with no Status widget (Epic, Incident) fails with an actionable message.
+- **`--status` is resolved before any write.** A mistyped name is the likeliest failure for this flag and is fully detectable from a read-only query, so `--title X --status typo` writes nothing at all rather than committing the title and then failing. Recorded in `planning/reviews-orphan/main-0e68987/observed-failures.md` (2026-09-09).
+- The `✓` line reports the project, the server-returned title, and GitLab's canonical casing of the status — not the casing you typed — so a wrong git-remote resolution is visible rather than silent.
+- An empty or whitespace-only `--status` is rejected by name at the CLI, on every resource type and platform. It previously read as "no field specified" on an issue and was silently dropped on an MR at exit 0.
 - At least one update flag is required; otherwise an error is returned.
-- Type-specific flags are validated upfront and rejected with a clear message if used on the wrong resource type.
+- Type-specific flags (`--reviewer`, `--target-branch`, `--due-date`, `--epic`, `--weight`, `--add-blocker`, `--remove-blocker`, `--status`) are validated upfront and rejected with a clear message if used on the wrong resource type.
 
 **Handler:** `handlers/updater.py` — `TicketUpdater` class
 

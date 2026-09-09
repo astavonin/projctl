@@ -396,6 +396,10 @@ projctl update milestone 10 --due-date 2026-04-01 --state activate
 
 # Preview without executing (safe — no API calls at all)
 projctl update issue 231 --dry-run --title "Preview" --add-label "type::fix"
+
+# Set the work-item Status field (GitLab Premium; issues only)
+projctl update issue 231 --status "In progress"
+projctl update issue 231 --status "In progress" --dry-run
 ```
 
 **Reference formats (same as `load`):**
@@ -421,6 +425,7 @@ projctl update mr https://gitlab.com/group/repo/-/merge_requests/144 ...  # full
 | `--due-date YYYY-MM-DD` | issue, milestone | Set due date |
 | `--add-blocker ISSUE` | issue only | Add "is blocked by" link to ISSUE (e.g. `252` or `#252`) |
 | `--remove-blocker ISSUE` | issue only | Remove "is blocked by" link to ISSUE |
+| `--status STATUS` | issue only | Set the work-item Status field by name, case-insensitive (e.g. `"In progress"`). GitLab Premium; not supported on GitHub. |
 | `--state EVENT` | all (restricted) | State transition (see below) |
 | `--dry-run` | all | Preview intent without any API calls |
 
@@ -435,9 +440,11 @@ projctl update mr https://gitlab.com/group/repo/-/merge_requests/144 ...  # full
 **Behavior notes:**
 - `--assignee` and `--reviewer` accept GitLab usernames; the tool resolves them to numeric user IDs before sending the API request.
 - `--milestone` accepts a milestone title (e.g. `"v2.0"`) or iid (e.g. `"5"`); resolved to the numeric database ID automatically.
-- `--dry-run` is fully safe: no API calls are made, not even the read needed for label merging. Label intent is shown as `<add: [...], remove: [...]>`.
+- `--dry-run` is fully safe: no API calls are made, not even the read needed for label merging. Label intent is shown as `<add: [...], remove: [...]>`. **Exception:** `--status` still performs its read-only GraphQL resolution (work-item GID + allowed-status lookup) under `--dry-run`, since that resolution is also what validates the status name; only the `workItemUpdate` mutation itself is skipped.
+- `--status` resolves the allowed status names live via GraphQL (`workItemTypes { ... allowedStatuses }`) rather than a hardcoded table, so a project/group with a custom status lifecycle (GitLab Ultimate) is matched correctly. Matching uses Unicode case folding. An unknown name lists the valid names and exits non-zero.
+- `--status` validates against the work item's **own** type — Tasks share the issue iid namespace and have a different status lifecycle — and is resolved **before any write**, so `--title X --status typo` writes nothing. An empty or whitespace-only value is rejected by name.
 - At least one update flag must be provided; running with no flags returns an error.
-- Type-specific flags (`--reviewer`, `--target-branch`, `--due-date`) are rejected with an error if used on the wrong resource type.
+- Type-specific flags (`--reviewer`, `--target-branch`, `--due-date`, `--status`) are rejected with an error if used on the wrong resource type.
 
 ### Merge Request Operations
 
