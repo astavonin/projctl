@@ -42,6 +42,9 @@ git clone git@github.com:astavonin/projctl.git
 pipx install -e ./projctl
 ```
 
+Then run `make install-hooks` — it installs the pre-commit guard that blocks proprietary
+identifiers from reaching this public repo. `make install` does it for you.
+
 ## Configuration
 
 Configuration is layered by purpose. Config file resolution: `./projctl.yaml` (project-local) then `~/.config/projctl/config.yaml` (user-wide), first found wins.

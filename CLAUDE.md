@@ -704,7 +704,13 @@ rsync -av --inplace --delete \
 ```bash
 make install   # creates .venv with dev tools (pytest, pylint, mypy, black, flake8)
                # also registers the CLI globally via pipx
+               # and installs the pre-commit proprietary-identifier guard
 ```
+
+The guard blocks commits carrying a `/home/<user>/work/` path, plus any term you add to the
+denylist — which ships **empty**, so add your internal hostnames and project names before it
+protects against those. See `projctl/CLAUDE.md` → "Proprietary-Identifier Guard"; the denylist
+lives outside the working tree on purpose.
 
 Two separate environments are created:
 - `.venv/` — isolated dev tooling (pytest, linters). Uses pip internally, but is sandboxed from the system Python.
@@ -731,7 +737,7 @@ make test                                              # run full suite with cov
 ### Linting
 
 ```bash
-make lint      # pylint + flake8 + mypy (all must pass)
+make lint      # pylint + flake8 + mypy + shellcheck (all must pass)
 make pylint    # pylint only
 make format    # apply black formatting
 ```
