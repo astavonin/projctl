@@ -1,0 +1,31 @@
+# Literal proprietary terms this repository must never publish — one per line.
+#
+# `make install-hooks` copies this template to <git-common-dir>/proprietary-terms on
+# first run, and never overwrites it afterwards. That location is deliberate: git never
+# commits, pushes, or clones anything inside .git/, so the terms cannot leak through the
+# very repository they protect. Do not move the live list into the working tree.
+#
+# THIS FILE STARTS WITH NO TERMS, so literal-term checking is OFF until you add some.
+# The hook says so on every run while that is true. The structural pattern still works,
+# but it cannot see a hostname — only a term here can.
+#
+# Matching is fixed-string (never a regex) and case-insensitive, and is applied per
+# line, so a term broken across a line break is not detected.
+#
+# COMMENTS: a '#' opens a comment only when followed by a space or end of line. So
+# `#acme-secret` is a TERM (an internal channel or tag), while `# a note` is a comment
+# and `acme-corp   # a note` is a term with a trailing comment. A term may contain
+# spaces and is matched as a whole phrase, not as its separate words.
+#
+# Add an entry for anything that identifies an employer, client, colleague, or internal
+# system:
+#
+#   gitlab.internal.example      # internal hostnames
+#   acme-corp                    # company or group names
+#   acme-base/telemetry          # internal project namespaces
+#   Some Client Ltd              # client names
+#   #acme-private-channel        # a term that itself begins with '#'
+#
+# The hook also enforces one structural pattern that needs no entry here:
+# /home/<user>/work/ paths, whose shape identifies work context without naming anyone.
+# Personal paths such as /home/<user>/projects/ are not flagged.

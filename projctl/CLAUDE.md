@@ -977,8 +977,52 @@ rsync -av --inplace --delete \
 ### Setup
 
 ```bash
-make install   # creates .venv, installs dev deps, registers CLI via pipx
+make install   # creates .venv, installs dev deps, registers CLI via pipx, installs git hooks
 ```
+
+### Proprietary-Identifier Guard (pre-commit hook)
+
+This repository publishes to `github.com/astavonin/projctl`, so every tracked file is world-readable the moment it is pushed — and git history keeps it readable even after a later commit deletes the line. `scripts/pre-commit` is a backstop for that, **not** a replacement for manual review.
+
+```bash
+make install-hooks          # installs the hook shim, seeds the denylist
+bash scripts/pre-commit     # manual sweep of the whole working tree
+```
+
+`make install` depends on `install-hooks`, so a fresh clone gets it without a separate step. `.git/hooks` is not versioned: the installer writes a small shim there that `exec`s the tracked `scripts/pre-commit`, so a pulled update takes effect with no reinstall. The shim **fails closed** — if the tracked script is missing or not executable (a checkout predating the guard, a stray `chmod -x`) it refuses the commit rather than passing silently. An existing unmanaged `pre-commit` hook is moved to `pre-commit.local.bak` (suffixed if one is already there) rather than overwritten, and the seeded denylist is mode 600 since it holds the terms themselves.
+
+**Two classes of identifier, stored differently:**
+
+| Class | Where it lives | Why |
+|---|---|---|
+| Structural — `/home/<user>/work/` paths | Hardcoded in `scripts/pre-commit` (`STRUCTURAL_PATTERN`) | The pattern has a shape that names no employer, so it is safe to publish |
+| Literal — internal hostnames, group and project names, client and colleague names | `<git-common-dir>/proprietary-terms`, seeded from `scripts/proprietary-terms.template` | Only the term itself identifies them, and the term is exactly what must not be published. `.git/` is never committed, pushed, or cloned |
+
+Committing the denylist would leak precisely what it exists to protect. `--git-common-dir` (not `--git-dir`) is used so linked worktrees share one list.
+
+**The denylist ships empty**, so literal-term checking is OFF until you add terms — and the structural pattern cannot see a hostname. The hook prints a warning on every run while that is true.
+
+**Which bytes are scanned.** At commit time the **index** is scanned (`git grep --cached`), not the working tree. The two diverge routinely — `git add` then edit, `git add -p`, `git commit --only`, any IDE staging flow — and it is the index that becomes history. A manual sweep has no index to speak of and scans the working tree instead; mode is chosen from `GIT_INDEX_FILE`, which git sets for hooks and never for a shell, so a deletion-only commit or a message-only `--amend` is not mistaken for a sweep.
+
+Symlinks are checked separately against their own blob — the link text is what gets committed — because `git grep` does not read non-regular blobs. This runs in **both** modes, so a link committed under `--no-verify` or before the hook existed is caught by a sweep.
+
+Collected paths are passed to git as `:(literal)` pathspecs. Without that, a file named `:^handler.py` — git's exclude short-magic — would remove `handler.py` from the scan.
+
+**Skipped:** gitignored paths (on a sweep; a force-added ignored file *is* scanned at commit time, because staging it publishes it) and binary files. **Exempt:** `tests/test_pre_commit_hook.py`, and only from the structural pass — its fixtures must contain sample work-paths to prove the pattern fires. It is still checked against the denylist.
+
+**Denylist syntax:** fixed-string, case-insensitive, matched per line. A `#` opens a comment only when followed by whitespace or end of line — so `#acme-secret` and `acme#42` are terms, while `# a note`, `acme  # a note` and `acme# a note` all carry comments. A leading UTF-8 BOM is stripped. A term may contain spaces and matches as a whole phrase.
+
+**Failing to look is never "clean."** A path that cannot be read, a command that errors, an existing-but-unreadable denylist, and a path `.gitattributes` marks binary (`-diff`) all block with a diagnostic rather than passing. `git grep` signals an unreadable file on stderr while still exiting 1, so stderr — not the exit status alone — decides whether the scan happened.
+
+**Known limits, stated rather than implied.** This is a backstop for manual review, not a replacement:
+
+- `git commit --no-verify` bypasses it entirely, by design of git.
+- `git merge` runs `pre-merge-commit`, not this hook; `git cherry-pick`, `git rebase` and `git revert` run no pre-commit hook at all. Sweep by hand after any of them.
+- `.git/hooks` is per-clone: a clone that never ran `make install-hooks` has no guard.
+- A term broken across a line break is not matched; matching is line-oriented.
+- Content only reachable through a submodule is not scanned.
+
+Covered by `tests/test_pre_commit_hook.py`, marked `integration`: it runs the real hook under `bash` against throwaway git repositories, since the hook's job is interposing on `git commit`. `make lint` runs `shellcheck` against the script when shellcheck is installed.
 
 ### Running Tests
 
@@ -991,7 +1035,7 @@ make test                                              # run full suite with cov
 ### Linting
 
 ```bash
-make lint      # pylint + flake8 + mypy
+make lint      # pylint + flake8 + mypy + shellcheck
 make pylint    # pylint only
 make format    # apply black formatting
 ```
