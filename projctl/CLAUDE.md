@@ -449,7 +449,10 @@ findings:
     severity: High
     description: "ptr may be null on the fast path"
     location: "src/foo.cc:42"
-    fix: "if (!ptr) return;"
+    fix: |
+      ```cpp
+      if (!ptr) return;
+      ```
 
   - title: "Unused import"
     severity: Low
@@ -457,6 +460,7 @@ findings:
     locations:
       - "src/bar.py:1"
       - "src/baz.py:3"
+    fix: "Drop the import; nothing in either module references it."
 
 replies:
   - discussion_id: "abc123def456"
@@ -465,6 +469,8 @@ replies:
 resolve:
   - discussion_id: "abc123def456"
 ```
+
+**`fix:` is rendered as Markdown, not fenced.** A code fix carries its own fence in the YAML, which also lets it declare a language and get syntax highlighting; a prose fix is written as plain text. The handler adds no fence of its own — it previously wrapped every value in a bare one, which disabled wrapping and turned a single-line prose fix into a horizontal-scroll strip while giving code no highlighting.
 
 **Where `discussion_id` comes from:** `projctl load mr <N> --comments` prints it under each comment as `` `thread: <id>` ``. It is the enclosing *thread's* id, not the note's — the `/discussions/:id` endpoints reject a note id. Every note in one thread shares the same value.
 

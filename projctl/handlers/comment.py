@@ -681,7 +681,10 @@ def _format_comment_body(finding: Dict[str, Any]) -> str:
         body += f"\n\n**Also affects:** {locs_str}"
 
     if fix:
-        body += f"\n\n**Fix:**\n```\n{fix}\n```"
+        # Rendered as Markdown, not fenced: a bare fence disables wrapping, so a prose fix
+        # becomes a horizontal-scroll strip. Code fixes carry their own fence in the YAML,
+        # which also lets them declare a language and get highlighting.
+        body += f"\n\n**Fix:**\n{fix}"
 
     return body
 
@@ -931,9 +934,7 @@ def format_review_comment(review_data: Dict[str, Any]) -> str:
 
             if fix:
                 lines.append("\n**Fix:**")
-                lines.append("```")
                 lines.append(fix)
-                lines.append("```")
 
             lines.append("")
 
