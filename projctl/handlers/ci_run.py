@@ -13,9 +13,7 @@ logger = logging.getLogger(__name__)
 # GitLab pipeline statuses that will not change without another event. Anything
 # else ("created", "pending", "running", "waiting_for_resource", …) is still in
 # flight and --wait keeps polling.
-_TERMINAL_STATUSES = frozenset(
-    {"success", "failed", "canceled", "cancelled", "skipped", "manual"}
-)
+_TERMINAL_STATUSES = frozenset({"success", "failed", "canceled", "cancelled", "skipped", "manual"})
 
 # A pipeline that finished only because every job was allowed to fail still
 # reports success; --wait reports the status GitLab gives and leaves the
@@ -108,10 +106,7 @@ class CiRunHandler:
         if not isinstance(pipeline, dict) or not pipeline.get("id"):
             raise PlatformError(f"Unexpected pipeline response for {ref}: {pipeline!r}")
 
-        print(
-            f"✓ Created pipeline #{pipeline['id']} on {ref} "
-            f"({pipeline.get('status', '?')})"
-        )
+        print(f"✓ Created pipeline #{pipeline['id']} on {ref} " f"({pipeline.get('status', '?')})")
         if pipeline.get("web_url"):
             print(f"  {pipeline['web_url']}")
         return pipeline

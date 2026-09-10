@@ -28,9 +28,7 @@ _MERGE_STATUS_SETTLE_DELAY_S = 3.0
 # any of them as a refusal would abort a chain that was about to become
 # mergeable. ci_still_running is transient; ci_must_pass is not — it means the
 # pipeline finished without success, or none ran against the current target.
-_TRANSIENT_MERGE_STATUSES = frozenset(
-    {"checking", "unchecked", "preparing", "ci_still_running"}
-)
+_TRANSIENT_MERGE_STATUSES = frozenset({"checking", "unchecked", "preparing", "ci_still_running"})
 
 # GitLab sets state "locked" while a merge is in flight. Observed on !266: a
 # merge already underway made the state gate report "not opened" and the run
@@ -207,9 +205,7 @@ class MergeHandler:
         """
         endpoint, _ = self._endpoint(mr_ref)
         try:
-            data = run_glab_json(
-                ["api", f"{endpoint}?include_diverged_commits_count=true"]
-            )
+            data = run_glab_json(["api", f"{endpoint}?include_diverged_commits_count=true"])
         except PlatformError:
             return 0
         if not isinstance(data, dict):
@@ -283,8 +279,13 @@ class MergeHandler:
         gates.append(("state", state == "opened", detail))
 
         is_draft = bool(mr.get("draft") or mr.get("work_in_progress"))
-        gates.append(("draft", not is_draft,
-                      f"MR !{iid} is a draft; mark it ready first" if is_draft else "ready"))
+        gates.append(
+            (
+                "draft",
+                not is_draft,
+                f"MR !{iid} is a draft; mark it ready first" if is_draft else "ready",
+            )
+        )
 
         # detailed_merge_status is authoritative; the legacy merge_status field
         # reports can_be_merged for an MR GitLab will refuse with HTTP 405 —
@@ -306,13 +307,18 @@ class MergeHandler:
 
         open_threads = self._unresolved_threads(mr_ref)
         thread_ok = allow_unresolved or open_threads == 0
-        gates.append((
-            "threads",
-            thread_ok,
-            f"MR !{iid} has {open_threads} unresolved thread(s); "
-            "resolve them or pass --allow-unresolved"
-            if not thread_ok else f"{open_threads} unresolved",
-        ))
+        gates.append(
+            (
+                "threads",
+                thread_ok,
+                (
+                    f"MR !{iid} has {open_threads} unresolved thread(s); "
+                    "resolve them or pass --allow-unresolved"
+                    if not thread_ok
+                    else f"{open_threads} unresolved"
+                ),
+            )
+        )
 
         # Under fast-forward-only merging the branch must be a direct descendant
         # of its target. A squashing project rewrites each merged commit, so a
@@ -321,26 +327,36 @@ class MergeHandler:
         # the PUT with 422. Observed on !265 after !263 merged.
         if self.project_merge_method() == "ff":
             behind = self.diverged_commits(mr_ref)
-            gates.append((
-                "ff-ready",
-                behind == 0,
-                f"MR !{iid} is {behind} commit(s) behind {mr.get('target_branch')} and the "
-                "project is fast-forward only; rebase it (merge --rebase)"
-                if behind else "descendant of target",
-            ))
+            gates.append(
+                (
+                    "ff-ready",
+                    behind == 0,
+                    (
+                        f"MR !{iid} is {behind} commit(s) behind {mr.get('target_branch')} and the "
+                        "project is fast-forward only; rebase it (merge --rebase)"
+                        if behind
+                        else "descendant of target"
+                    ),
+                )
+            )
 
         pipeline = mr.get("head_pipeline") or mr.get("pipeline") or {}
         p_status = pipeline.get("status")
         # A missing pipeline is not a failure: docs-only branches and projects
         # without CI legitimately have none.
         pipeline_ok = allow_failed_pipeline or p_status is None or p_status == "success"
-        gates.append((
-            "pipeline",
-            pipeline_ok,
-            f"MR !{iid} head pipeline is '{p_status}'; "
-            "pass --allow-failed-pipeline to merge anyway"
-            if not pipeline_ok else str(p_status or "none"),
-        ))
+        gates.append(
+            (
+                "pipeline",
+                pipeline_ok,
+                (
+                    f"MR !{iid} head pipeline is '{p_status}'; "
+                    "pass --allow-failed-pipeline to merge anyway"
+                    if not pipeline_ok
+                    else str(p_status or "none")
+                ),
+            )
+        )
 
         return mr, gates
 
@@ -674,7 +690,7 @@ class MergeHandler:
                 return 1
 
             merged_count += 1
-            remaining = mr_refs[index + 1:]
+            remaining = mr_refs[index + 1 :]
             if not remaining:
                 continue
 

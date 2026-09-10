@@ -1186,7 +1186,7 @@ rollup is not mistaken for a green run.
     p.add_argument(
         "--dry-run",
         action="store_true",
-        help="Report every gate for every MR without merging; exits 0 only if all can merge"
+        help="Report every gate for every MR without merging; exits 0 only if all can merge",
     )
     p.add_argument(
         "--allow-unresolved", action="store_true", help="Merge despite unresolved threads"

@@ -162,9 +162,11 @@ def _fetch_existing_note_bodies(mr_number: int) -> set:
 def _fetch_discussion_note_bodies(mr_number: int, discussion_id: str) -> set:
     """Fetch note bodies from a specific discussion thread for deduplication."""
     cmd = [
-        "glab", "api",
+        "glab",
+        "api",
         f"projects/:id/merge_requests/{mr_number}/discussions/{discussion_id}",
-        "--method", "GET",
+        "--method",
+        "GET",
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -175,9 +177,7 @@ def _fetch_discussion_note_bodies(mr_number: int, discussion_id: str) -> set:
         return set()
 
 
-def _parse_hunk_lines(
-    file_path: str, diff_text: str, valid: Set[Tuple[str, int]]
-) -> None:
+def _parse_hunk_lines(file_path: str, diff_text: str, valid: Set[Tuple[str, int]]) -> None:
     """Add (file_path, new_line_number) pairs from a unified diff to valid."""
     new_line = 0
     for line in diff_text.splitlines():
@@ -240,7 +240,13 @@ def _fetch_mr_diff_lines(mr_number: int) -> Optional[Tuple[Set[Tuple[str, int]],
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         diffs = json.loads(result.stdout)
         return _parse_diff_lines(diffs)
-    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, AttributeError, TypeError) as err:
+    except (
+        subprocess.CalledProcessError,
+        json.JSONDecodeError,
+        KeyError,
+        AttributeError,
+        TypeError,
+    ) as err:
         logger.debug("Could not fetch MR diff lines for pre-validation: %s", err)
         return None
 
@@ -274,11 +280,15 @@ def _post_discussion_reply(
 
     payload = {"body": body}
     cmd = [
-        "glab", "api",
+        "glab",
+        "api",
         f"projects/:id/merge_requests/{mr_number}/discussions/{discussion_id}/notes",
-        "--method", "POST",
-        "--header", "Content-Type: application/json",
-        "--input", "-",
+        "--method",
+        "POST",
+        "--header",
+        "Content-Type: application/json",
+        "--input",
+        "-",
     ]
     try:
         subprocess.run(cmd, input=json.dumps(payload), capture_output=True, text=True, check=True)
@@ -330,9 +340,11 @@ def _resolve_discussion(mr_number: int, discussion_id: str, dry_run: bool) -> Op
     """
     # Check current state first.
     cmd_get = [
-        "glab", "api",
+        "glab",
+        "api",
         f"projects/:id/merge_requests/{mr_number}/discussions/{discussion_id}",
-        "--method", "GET",
+        "--method",
+        "GET",
     ]
     try:
         result = subprocess.run(cmd_get, capture_output=True, text=True, check=True)
@@ -350,11 +362,13 @@ def _resolve_discussion(mr_number: int, discussion_id: str, dry_run: bool) -> Op
     # discussion_resolve_endpoint() owns the query-string-vs-body rule; see its
     # docstring for why a JSON body 403s on non-diff threads.
     cmd_put = [
-        "glab", "api",
+        "glab",
+        "api",
         discussion_resolve_endpoint(
             f"projects/:id/merge_requests/{mr_number}/discussions", discussion_id
         ),
-        "--method", "PUT",
+        "--method",
+        "PUT",
     ]
     try:
         subprocess.run(cmd_put, capture_output=True, text=True, check=True)

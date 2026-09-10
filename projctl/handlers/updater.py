@@ -533,7 +533,9 @@ class TicketUpdater:
         output = self._loader._run_glab_command(["api", "projects/:fullpath"])
         return str(json.loads(output)["id"])
 
-    def add_issue_link(self, issue_ref: str, target_ref: str, link_type: str = "is_blocked_by") -> None:
+    def add_issue_link(
+        self, issue_ref: str, target_ref: str, link_type: str = "is_blocked_by"
+    ) -> None:
         """Add a blocking/blocked-by link between two issues.
 
         Args:
@@ -559,10 +561,16 @@ class TicketUpdater:
         # target_project_id must be a numeric ID — :fullpath is not expanded in -f fields.
         project_id = self._resolve_project_id()
         cmd = [
-            "api", "-X", "POST", endpoint,
-            "-f", f"target_project_id={project_id}",
-            "-f", f"target_issue_iid={target_iid}",
-            "-f", f"link_type={link_type}",
+            "api",
+            "-X",
+            "POST",
+            endpoint,
+            "-f",
+            f"target_project_id={project_id}",
+            "-f",
+            f"target_issue_iid={target_iid}",
+            "-f",
+            f"link_type={link_type}",
         ]
         self._loader._run_glab_command(cmd)
         print(f"✓ Added {link_type} link: issue #{iid} ← #{target_iid}")

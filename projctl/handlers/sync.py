@@ -217,7 +217,10 @@ class PlanningSyncHandler:
             gdrive_planning_base=gdrive_planning_base,
             gdrive_repo_path=gdrive_planning_base / self.repo_name,
             memory_path=memory_src if memory_src.exists() else None,
-            gdrive_memory_path=gdrive_base_path / "backup" / "claude-memory" / _encode_repo_path(self.repo_root),
+            gdrive_memory_path=gdrive_base_path
+            / "backup"
+            / "claude-memory"
+            / _encode_repo_path(self.repo_root),
         )
 
     @property
@@ -632,12 +635,14 @@ class PlanningSyncHandler:
             local_mem = self.memory_path
             assert local_mem is not None  # guaranteed by local_exists guard above
             push_entries = self._rsync_itemize(
-                local_mem, self.gdrive_memory_path,
+                local_mem,
+                self.gdrive_memory_path,
                 excludes=_MEMORY_RSYNC_EXCLUDES,
                 # delete=True (default): correctly shows what push would delete on remote
             )
             pull_entries = self._rsync_itemize(
-                self.gdrive_memory_path, local_mem,
+                self.gdrive_memory_path,
+                local_mem,
                 excludes=_MEMORY_RSYNC_EXCLUDES,
                 delete=False,  # mirrors pull() behavior: additive, never deletes local files
             )

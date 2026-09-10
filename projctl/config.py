@@ -134,8 +134,7 @@ class Config:
 
         # No config found
         raise FileNotFoundError(
-            "No config file found. Searched:\n"
-            + "\n".join(f"  - {p}" for p, _ in candidates)
+            "No config file found. Searched:\n" + "\n".join(f"  - {p}" for p, _ in candidates)
         )
 
     def _load_config_file(self, config_path: Path) -> Dict[str, Any]:
@@ -352,9 +351,7 @@ class Config:
                 f"got {type(reviewers).__name__!r}"
             )
         if not all(isinstance(r, str) for r in reviewers):
-            raise ConfigurationError(
-                "mr_template.reviewers must be a list of strings (usernames)"
-            )
+            raise ConfigurationError("mr_template.reviewers must be a list of strings (usernames)")
         return list(reviewers)
 
     def get_default_group(self) -> Optional[str]:

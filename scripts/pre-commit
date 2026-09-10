@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Leak guard for a public repository.
+#
+# Every tracked file here is published to GitHub, so a local path or a private
+# host pasted into a doc or an example is published with it. This runs on staged
+# content only — the working tree routinely holds experiments that are not being
+# committed, and scanning those produces failures for content nobody is shipping.
+#
+# The rules are structural on purpose. This script is itself published, so it
+# cannot name the projects, hosts, or people it exists to keep out; a scanner
+# that hardcodes its own secrets leaks them. User-specific nouns belong in the
+# untracked extension file described under Rule 3.
+set -uo pipefail
+
+ROOT=$(git rev-parse --show-toplevel)
+cd "$ROOT" || exit 1
+
+FAIL=0
+
+report() {
+    printf 'pre-commit: %s\n' "$1" >&2
+    printf '%s\n' "$2" | sed 's/^/    /' >&2
+    FAIL=1
+}
+
+# Added lines only. A pre-existing hit in an untouched region is not this
+# commit's to fix, and blocking on it would make every later commit unlandable.
+ADDED=$(git diff --cached -U0 --diff-filter=ACM | grep '^+' | grep -v '^+++' || true)
+[ -n "$ADDED" ] || exit 0
+
+# Rule 1 — work-context absolute paths.
+# ~/projects holds public repos and is fine. ~/work holds client checkouts whose
+# directory names are themselves proprietary, so the path leaks even when the
+# surrounding text does not.
+# The pattern is built rather than written literally: spelled out, it matches
+# itself, and this script would refuse to commit its own source.
+WORK_RE="/home/[^/[:space:]]+/""work/"
+HITS=$(printf '%s\n' "$ADDED" | grep -E "$WORK_RE" || true)
+[ -z "$HITS" ] || report "staged content contains an absolute path into a work-context checkout" "$HITS"
+
+# Rule 2 — self-hosted GitLab or GitHub Enterprise hosts.
+# The public hosts and the documentation placeholder are allowed; anything else
+# under those shapes is somebody's internal instance.
+HITS=$(printf '%s\n' "$ADDED" \
+    | grep -Eo '\b(gitlab|github)\.[a-z0-9-]+\.[a-z]{2,}\b' \
+    | grep -Ev '^(gitlab|github)\.(com|io|example\.com)$' || true)
+[ -z "$HITS" ] || report "staged content names a non-public forge host" "$HITS"
+
+# Rule 3 — user-supplied patterns, one extended regex per line, # for comments.
+# Untracked by design: this is where private project and people names go, and
+# they must not be committed to state them.
+PATTERNS="$ROOT/.git/leak-patterns"
+if [ -r "$PATTERNS" ]; then
+    while IFS= read -r pattern; do
+        case "$pattern" in ''|\#*) continue ;; esac
+        HITS=$(printf '%s\n' "$ADDED" | grep -Ei -- "$pattern" || true)
+        [ -z "$HITS" ] || report "staged content matches a local leak pattern" "$HITS"
+    done < "$PATTERNS"
+fi
+
+if [ "$FAIL" -ne 0 ]; then
+    printf 'pre-commit: refusing to commit. Fix the lines above, or pass --no-verify if this is a false positive.\n' >&2
+    exit 1
+fi
+exit 0

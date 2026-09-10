@@ -1,6 +1,5 @@
 """Report and log the current user's own GitLab timelogs."""
 
-import json
 import logging
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
@@ -14,7 +13,7 @@ from ..utils.git_helpers import (
     parse_issue_url,
     parse_mr_url,
 )
-from ..utils.glab_runner import run_glab_command
+from ..utils.glab_runner import parse_graphql_data, run_glab_command
 
 logger = logging.getLogger(__name__)
 
@@ -307,32 +306,6 @@ class TimelogHandler:
     # GraphQL transport
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _parse_graphql_response(output: str) -> Dict[str, Any]:
-        """Decode a glab GraphQL response and return its 'data' object.
-
-        Raises:
-            PlatformError: If the output is not valid JSON, decodes to a
-                non-object top level (e.g. a bare JSON array), or the
-                top-level 'errors' array is present. GitLab's GraphQL
-                endpoint can report query errors in an HTTP 200 response, so
-                this is checked independently of glab's own subprocess exit
-                code.
-        """
-        try:
-            resp = json.loads(output)
-        except json.JSONDecodeError as exc:
-            raise PlatformError(f"Unexpected glab response: {output[:200]!r}") from exc
-        if not isinstance(resp, dict):
-            # Valid JSON with the wrong shape (e.g. "[]") would otherwise reach
-            # resp.get() below and crash with an uncaught AttributeError instead
-            # of the normal PlatformError error path.
-            raise PlatformError(f"Unexpected glab response: {output[:200]!r}")
-        errors = resp.get("errors")
-        if errors:
-            raise PlatformError(f"GraphQL query failed: {errors}")
-        return resp.get("data") or {}  # type: ignore[no-any-return]
-
     def _resolve_current_user(self) -> str:
         """Resolve the authenticated GitLab username via GraphQL.
 
@@ -348,7 +321,7 @@ class TimelogHandler:
             PlatformError: If currentUser resolves to null, or the request fails.
         """
         cmd = ["api", "graphql", "-f", f"query={_CURRENT_USER_QUERY}"]
-        data = self._parse_graphql_response(run_glab_command(cmd))
+        data = parse_graphql_data(run_glab_command(cmd))
         username = (data.get("currentUser") or {}).get("username")
         if not username:
             raise PlatformError(
@@ -434,7 +407,7 @@ class TimelogHandler:
             if cursor:
                 cmd += ["-f", f"after={cursor}"]
 
-            data = self._parse_graphql_response(run_glab_command(cmd))
+            data = parse_graphql_data(run_glab_command(cmd))
             connection = data.get("timelogs") or {}
             nodes.extend(connection.get("nodes") or [])
             if not total_spent_time_seen:
@@ -810,7 +783,7 @@ class TimelogHandler:
             "-f",
             f"iid={iid}",
         ]
-        data = self._parse_graphql_response(run_glab_command(cmd))
+        data = parse_graphql_data(run_glab_command(cmd))
         project = data.get("project")
         if project is None:
             raise PlatformError(
@@ -847,7 +820,7 @@ class TimelogHandler:
         TimelogCreatePayload.errors array and a null timelog — a silently
         no-op mutation would be the worst outcome for a command whose whole
         purpose is recording work, so errors is checked explicitly here,
-        beyond the top-level GraphQL 'errors' array _parse_graphql_response()
+        beyond the top-level GraphQL 'errors' array parse_graphql_data()
         already checks. A response with neither errors nor a created
         timelog (the payload's `timelog { id }` selection exists precisely
         to prove a write occurred) is checked too, and raised as a distinct,
@@ -874,7 +847,7 @@ class TimelogHandler:
             "-f",
             f"summary={_TIMELOG_SUMMARY}",
         ]
-        data = self._parse_graphql_response(run_glab_command(cmd))
+        data = parse_graphql_data(run_glab_command(cmd))
         payload = data.get("timelogCreate") or {}
         errors = payload.get("errors") or []
         if errors:
