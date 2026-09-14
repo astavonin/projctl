@@ -138,6 +138,34 @@ def sync_env(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
+class TestRepoRootAdoptionSite:
+    """PlanningSyncHandler's construction-time use of the shared get_repo_root()."""
+
+    def test_construction_outside_a_work_tree_names_planning_sync_in_the_error(
+        self, tmp_path: Path
+    ) -> None:
+        config = _make_config(tmp_path, tmp_path / "gdrive")
+        with patch("projctl.utils.git_helpers.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=128, stdout="", stderr="fatal")
+            with pytest.raises(
+                PlatformError, match=r"Not in a git repository\. Planning sync requires git\."
+            ):
+                PlanningSyncHandler(config)
+
+    def test_construction_takes_its_repository_root_from_git_not_the_working_directory(
+        self, tmp_path: Path
+    ) -> None:
+        repo = tmp_path / "elsewhere-repo"
+        repo.mkdir()
+        config = _make_config(tmp_path, tmp_path / "gdrive")
+        with patch("projctl.utils.git_helpers.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=f"{repo}\n", stderr="")
+            handler = PlanningSyncHandler(config)
+
+        assert handler.repo_root == repo
+        assert handler.repo_name == "elsewhere-repo"
+
+
 class TestParseItemizeLine:
     """Unit tests for _parse_itemize_line — pure function, no subprocess."""
 
@@ -1691,9 +1719,9 @@ class TestMemorySync:
             with patch.object(handler, "_run_rsync", side_effect=fake_run_rsync):
                 # Simulate GDrive memory directory existing.
                 with patch.object(
-                    type(handler), "gdrive_memory_path", new_callable=lambda: property(
-                        lambda self: gdrive_mem
-                    )
+                    type(handler),
+                    "gdrive_memory_path",
+                    new_callable=lambda: property(lambda self: gdrive_mem),
                 ):
                     handler.pull()
 
@@ -1970,9 +1998,9 @@ class TestMemorySync:
         with patch.object(handler, "_verify_rsync_available"):
             with patch.object(handler, "_run_rsync", side_effect=fake_run_rsync):
                 with patch.object(
-                    type(handler), "gdrive_memory_path", new_callable=lambda: property(
-                        lambda self: gdrive_mem
-                    )
+                    type(handler),
+                    "gdrive_memory_path",
+                    new_callable=lambda: property(lambda self: gdrive_mem),
                 ):
                     with redirect_stdout(buf):
                         with pytest.raises(PlatformError, match="memory rsync failed"):
@@ -2012,14 +2040,12 @@ class TestMemorySync:
         assert "Memory STATUS:" in output
 
         # Identify pull-direction call: source is gdrive_memory, target is local_memory.
-        pull_calls = [
-            c for c in itemize_calls if c["source"] == gdrive_memory
-        ]
+        pull_calls = [c for c in itemize_calls if c["source"] == gdrive_memory]
         assert pull_calls, "No pull-direction _rsync_itemize call was recorded"
         for call in pull_calls:
-            assert call["kwargs"].get("delete") is False, (
-                "Pull-direction _rsync_itemize must use delete=False to match pull() behavior"
-            )
+            assert (
+                call["kwargs"].get("delete") is False
+            ), "Pull-direction _rsync_itemize must use delete=False to match pull() behavior"
 
         # a.md is local-only; because delete=False the oracle must not list it
         # under any "would be deleted" section for the pull direction.

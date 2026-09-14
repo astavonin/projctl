@@ -8,7 +8,12 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from projctl.config import Config, ConfigurationError, config_search_paths
+from projctl.config import (
+    PROJECT_LOCAL_CONFIG_NAMES,
+    Config,
+    ConfigurationError,
+    config_search_paths,
+)
 
 
 class TestConfigLoading:
@@ -1042,7 +1047,9 @@ class TestGetDefaultMrReviewers:
 
         # Act / Assert
         config = Config(config_path)
-        with pytest.raises(ConfigurationError, match="mr_template.reviewers must be a list of strings"):
+        with pytest.raises(
+            ConfigurationError, match="mr_template.reviewers must be a list of strings"
+        ):
             config.get_default_mr_reviewers()
 
 
@@ -1100,3 +1107,384 @@ class TestConfigSearchPaths:
             if p.name == "glab_config.yaml" and ".config" in str(p)
         )
         assert user_idx < legacy_idx
+
+
+class TestProjectLocalConfigNames:
+    """PROJECT_LOCAL_CONFIG_NAMES is the single source config_search_paths()
+    and docs_search.py's per-project probe both read, so they cannot disagree
+    about order (see design.md §5.2)."""
+
+    def test_legacy_name_precedes_preferred_name(self) -> None:
+        assert PROJECT_LOCAL_CONFIG_NAMES == ("glab_config.yaml", "projctl.yaml")
+
+    def test_config_search_paths_first_two_entries_use_the_same_constant(self) -> None:
+        paths = config_search_paths()
+        assert paths[0][0].name == PROJECT_LOCAL_CONFIG_NAMES[0]
+        assert paths[1][0].name == PROJECT_LOCAL_CONFIG_NAMES[1]
+
+
+class TestSearchConfigAccessor:
+    """Config.get_search_config() — the search: section (design.md §5.2, §6)."""
+
+    def test_absent_search_key_returns_defaults(self, temp_dir: Path) -> None:
+        cfg_path = temp_dir / "projctl.yaml"
+        cfg_path.write_text("planning_sync:\n  gdrive_base: ~/GoogleDrive\n")
+        config = Config(cfg_path)
+        search_config = config.get_search_config()
+        assert search_config.docs_path == "docs"
+        assert search_config.docs_path_configured is False
+        assert search_config.related == []
+
+    def test_configured_docs_path_string_reports_configured_true(self, temp_dir: Path) -> None:
+        cfg_path = temp_dir / "projctl.yaml"
+        cfg_path.write_text("search:\n  docs_path: documentation\n")
+        config = Config(cfg_path)
+        search_config = config.get_search_config()
+        assert search_config.docs_path == "documentation"
+        assert search_config.docs_path_configured is True
+
+    def test_configured_docs_path_null_reports_configured_true(self, temp_dir: Path) -> None:
+        cfg_path = temp_dir / "projctl.yaml"
+        cfg_path.write_text("search:\n  docs_path: null\n")
+        config = Config(cfg_path)
+        search_config = config.get_search_config()
+        assert search_config.docs_path is None
+        assert search_config.docs_path_configured is True
+
+    def test_related_without_docs_path_keeps_the_documented_default(self, temp_dir: Path) -> None:
+        cfg_path = temp_dir / "projctl.yaml"
+        cfg_path.write_text("search:\n  related:\n    - ../sibling\n")
+        search_config = Config(cfg_path).get_search_config()
+        assert search_config.docs_path == "docs"
+        assert search_config.docs_path_configured is False
+
+    def test_search_as_a_scalar_raises_naming_the_key(self, temp_dir: Path) -> None:
+        cfg_path = temp_dir / "projctl.yaml"
+        cfg_path.write_text('search: "on"\n')
+        config = Config(cfg_path)
+        with pytest.raises(ConfigurationError, match="search"):
+            config.get_search_config()
+
+    def test_search_present_as_null_is_rejected_rather_than_read_as_absent(
+        self, temp_dir: Path
+    ) -> None:
+        # A present key asserts a shape; silently defaulting it hides a
+        # truncated section from the operator who wrote it (§5.2).
+        cfg_path = temp_dir / "projctl.yaml"
+        cfg_path.write_text("search:\n")
+        config = Config(cfg_path)
+        with pytest.raises(ConfigurationError, match="search must be a mapping"):
+            config.get_search_config()
+
+    def test_docs_path_wrong_type_raises_naming_the_key(self, temp_dir: Path) -> None:
+        cfg_path = temp_dir / "projctl.yaml"
+        cfg_path.write_text("search:\n  docs_path: 3\n")
+        config = Config(cfg_path)
+        with pytest.raises(ConfigurationError, match="docs_path"):
+            config.get_search_config()
+
+    def test_related_wrong_type_raises_naming_the_key(self, temp_dir: Path) -> None:
+        cfg_path = temp_dir / "projctl.yaml"
+        cfg_path.write_text("search:\n  related: ../x\n")
+        config = Config(cfg_path)
+        with pytest.raises(ConfigurationError, match="related"):
+            config.get_search_config()
+
+    def test_related_non_string_member_names_its_index(self, temp_dir: Path) -> None:
+        cfg_path = temp_dir / "projctl.yaml"
+        cfg_path.write_text("search:\n  related:\n    - ../ok\n    - 7\n")
+        config = Config(cfg_path)
+        with pytest.raises(ConfigurationError, match=r"related\[1\]"):
+            config.get_search_config()
+
+    def test_legacy_config_carrying_search_still_yields_it_with_undeclared_platform(
+        self, temp_dir: Path
+    ) -> None:
+        """A legacy (pre-platform:) config that happens to carry search: must not
+        have it silently dropped by _transform_legacy_config's whitelist, and
+        its platform must read as undeclared rather than the gitlab default."""
+        cfg_path = temp_dir / "glab_config.yaml"
+        cfg_path.write_text(
+            "labels:\n  default: []\ngitlab:\n  default_group: g\nsearch:\n  docs_path: docs\n"
+        )
+        with pytest.warns(DeprecationWarning):
+            config = Config(cfg_path)
+        assert config.get_search_config().docs_path == "docs"
+        assert config.get_raw_platform_or_undeclared() == "undeclared"
+
+
+class TestRawPlatformOrUndeclared:
+    def test_declared_platform_is_returned_as_is(self, temp_dir: Path) -> None:
+        cfg_path = temp_dir / "projctl.yaml"
+        cfg_path.write_text("platform: github\n")
+        config = Config(cfg_path)
+        assert config.get_raw_platform_or_undeclared() == "github"
+
+    def test_absent_platform_key_is_undeclared_not_the_gitlab_default(self, temp_dir: Path) -> None:
+        cfg_path = temp_dir / "projctl.yaml"
+        cfg_path.write_text("planning_sync:\n  gdrive_base: ~/GoogleDrive\n")
+        config = Config(cfg_path)
+        assert config.platform == "gitlab"  # dispatch still defaults to gitlab
+        assert config.get_raw_platform_or_undeclared() == "undeclared"
+
+    def test_a_non_string_platform_value_is_rendered_as_written(self, temp_dir: Path) -> None:
+        cfg_path = temp_dir / "projctl.yaml"
+        cfg_path.write_text("platform: 3\n")
+        config = Config(cfg_path)
+        assert config.get_raw_platform_or_undeclared() == "3"
+
+
+class TestRawConfigDataIsolation:
+    """raw_config_data is the as-parsed mapping, and stays that way."""
+
+    def test_the_raw_mapping_is_not_the_transformed_one(self, temp_dir: Path) -> None:
+        cfg_path = temp_dir / "projctl.yaml"
+        cfg_path.write_text("platform: github\nsearch:\n  docs_path: docs\n")
+        config = Config(cfg_path)
+        assert config.config_data is not config.raw_config_data
+
+    def test_a_later_write_to_config_data_cannot_surface_as_a_declared_platform(
+        self, temp_dir: Path
+    ) -> None:
+        cfg_path = temp_dir / "projctl.yaml"
+        cfg_path.write_text("gitlab:\n  default_group: g\n")
+        config = Config(cfg_path)
+        config.config_data["platform"] = "gitlab"
+        assert config.get_raw_platform_or_undeclared() == "undeclared"
+
+    def test_a_nested_write_to_config_data_does_not_reach_the_raw_mapping(
+        self, temp_dir: Path
+    ) -> None:
+        cfg_path = temp_dir / "projctl.yaml"
+        cfg_path.write_text("platform: gitlab\nsearch:\n  related:\n    - ../a\n")
+        config = Config(cfg_path)
+        config.config_data["search"]["related"].append("../injected")
+        assert config.get_search_config().related == ["../a"]
+
+
+# ---------------------------------------------------------------------------
+# PRODUCT-SHIPPED compatibility matrix (design.md §6) — the shapes the managed
+# repositories use must load exactly as they did before `search:` existed.
+# ---------------------------------------------------------------------------
+
+_MANAGED_CONFIG_SHAPES: Dict[str, str] = {
+    "gitlab-flat-labels": (
+        "platform: gitlab\n"
+        "gitlab:\n"
+        "  default_group: group/project\n"
+        "  labels:\n"
+        "    default:\n"
+        "      - development-status::backlog\n"
+    ),
+    "gitlab-or-group": (
+        "platform: gitlab\n"
+        "gitlab:\n"
+        "  default_group: group/project\n"
+        "  labels:\n"
+        "    default:\n"
+        "      - [type::feature, type::bug]\n"
+        "      - development-status::backlog\n"
+    ),
+    "gitlab-allowed-present": (
+        "platform: gitlab\n"
+        "gitlab:\n"
+        "  default_group: group/project\n"
+        "  labels:\n"
+        "    default: [development-status::backlog]\n"
+        "    allowed: [type::feature, type::bug]\n"
+    ),
+    "gitlab-allowed-empty": (
+        "platform: gitlab\n"
+        "gitlab:\n"
+        "  default_group: group/project\n"
+        "  labels:\n"
+        "    default: [development-status::backlog]\n"
+        "    allowed: []\n"
+    ),
+    "gitlab-default-epic": (
+        "platform: gitlab\n"
+        "gitlab:\n"
+        "  default_group: group/project\n"
+        "  labels:\n"
+        "    default: [development-status::backlog]\n"
+        "    default_epic: [type::epic]\n"
+    ),
+    "gitlab-with-planning-sync": (
+        "platform: gitlab\n"
+        "gitlab:\n"
+        "  default_group: group/project\n"
+        "  labels:\n"
+        "    default: [development-status::backlog]\n"
+        "planning_sync:\n"
+        "  gdrive_base: ~/GoogleDrive\n"
+    ),
+    "gitlab-with-templates": (
+        "platform: gitlab\n"
+        "gitlab:\n"
+        "  default_group: group/project\n"
+        "  labels:\n"
+        "    default: [development-status::backlog]\n"
+        "common:\n"
+        "  issue_template:\n"
+        "    required_sections: [Description, Acceptance Criteria]\n"
+        "  mr_template:\n"
+        "    required_sections: [Summary]\n"
+        "    required_fields: [reviewers, labels]\n"
+        "    reviewers: [alice, bob]\n"
+    ),
+    "github-repo": (
+        "platform: github\n"
+        "github:\n"
+        "  repo: org/repo\n"
+        "  labels:\n"
+        "    default: [development-status::backlog]\n"
+    ),
+    "github-or-group": (
+        "platform: github\n"
+        "github:\n"
+        "  repo: org/repo\n"
+        "  labels:\n"
+        "    default:\n"
+        "      - [type::feature, type::bug]\n"
+    ),
+    "no-platform-key": ("gitlab:\n  default_group: group/project\n  labels:\n    default: []\n"),
+    "legacy-allowed-labels": (
+        "labels:\n"
+        "  default: [development-status::backlog]\n"
+        "  allowed_labels: [type::feature]\n"
+        "gitlab:\n"
+        "  default_group: group/project\n"
+    ),
+}
+
+
+def _accessor_snapshot(config: Config) -> Dict[str, Any]:
+    """Every existing accessor's value, for a before/after comparison."""
+    return {
+        "platform": config.platform,
+        "default_group": config.get_default_group(),
+        "default_labels": config.get_default_labels(),
+        "required_label_groups": config.get_required_label_groups(),
+        "default_epic_labels": config.get_default_epic_labels(),
+        "allowed_labels": config.get_allowed_labels(),
+        "required_sections": config.get_required_sections(),
+        "required_epic_sections": config.get_required_epic_sections(),
+        "required_mr_sections": config.get_required_mr_sections(),
+        "required_issue_fields": config.get_required_issue_fields(),
+        "required_epic_fields": config.get_required_epic_fields(),
+        "required_mr_fields": config.get_required_mr_fields(),
+        "default_mr_reviewers": config.get_default_mr_reviewers(),
+        "planning_sync": config.planning_sync,
+    }
+
+
+def _load(path: Path, body: str) -> Config:
+    path.write_text(body)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return Config(path)
+
+
+# The pre-change value of every accessor, as literal data rather than as a
+# second reading of the same live code: a before/after comparison cancels out
+# any regression both sides share, which is exactly the class NFR-4 names.
+_BASELINE_ACCESSORS: Dict[str, Any] = {
+    "platform": "gitlab",
+    "default_group": "group/project",
+    "default_labels": ["development-status::backlog"],
+    "required_label_groups": [],
+    "default_epic_labels": [],
+    "allowed_labels": None,
+    "required_sections": [],
+    "required_epic_sections": ["Description"],
+    "required_mr_sections": ["Summary", "Implementation Details", "How It Was Tested"],
+    "required_issue_fields": ["weight"],
+    "required_epic_fields": [],
+    "required_mr_fields": [],
+    "default_mr_reviewers": [],
+    "planning_sync": {},
+}
+
+_SHAPE_ACCESSOR_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    "gitlab-flat-labels": {},
+    "gitlab-or-group": {"required_label_groups": [["type::feature", "type::bug"]]},
+    "gitlab-allowed-present": {"allowed_labels": ["type::feature", "type::bug"]},
+    "gitlab-allowed-empty": {"allowed_labels": []},
+    "gitlab-default-epic": {"default_epic_labels": ["type::epic"]},
+    "gitlab-with-planning-sync": {"planning_sync": {"gdrive_base": "~/GoogleDrive"}},
+    "gitlab-with-templates": {
+        "required_sections": ["Description", "Acceptance Criteria"],
+        "required_mr_sections": ["Summary"],
+        "required_mr_fields": ["reviewers", "labels"],
+        "default_mr_reviewers": ["alice", "bob"],
+    },
+    "github-repo": {
+        "platform": "github",
+        "default_group": None,
+        "required_issue_fields": [],
+    },
+    "github-or-group": {
+        "platform": "github",
+        "default_group": None,
+        "default_labels": [],
+        "required_label_groups": [["type::feature", "type::bug"]],
+        "required_issue_fields": [],
+    },
+    "no-platform-key": {"default_labels": []},
+    "legacy-allowed-labels": {
+        "allowed_labels": ["type::feature"],
+        "required_sections": ["Description"],
+    },
+}
+
+
+class TestManagedConfigShapeCompatibility:
+    """NFR-4: the existing projctl.yaml shapes load exactly as they did before."""
+
+    def test_every_managed_shape_carries_a_pinned_accessor_snapshot(self) -> None:
+        assert set(_SHAPE_ACCESSOR_OVERRIDES) == set(_MANAGED_CONFIG_SHAPES)
+
+    @pytest.mark.parametrize("shape", sorted(_MANAGED_CONFIG_SHAPES))
+    def test_every_accessor_returns_its_pinned_pre_change_value(
+        self, shape: str, temp_dir: Path
+    ) -> None:
+        config = _load(temp_dir / "projctl.yaml", _MANAGED_CONFIG_SHAPES[shape])
+        expected = {**_BASELINE_ACCESSORS, **_SHAPE_ACCESSOR_OVERRIDES[shape]}
+        assert _accessor_snapshot(config) == expected
+
+    @pytest.mark.parametrize("shape", sorted(_MANAGED_CONFIG_SHAPES))
+    def test_adding_a_search_section_changes_no_existing_accessor(
+        self, shape: str, temp_dir: Path
+    ) -> None:
+        body = _MANAGED_CONFIG_SHAPES[shape]
+        before = _accessor_snapshot(_load(temp_dir / "before.yaml", body))
+        after_config = _load(
+            temp_dir / "after.yaml", body + "search:\n  docs_path: documentation\n"
+        )
+
+        assert _accessor_snapshot(after_config) == before
+        assert after_config.get_search_config().docs_path == "documentation"
+
+    @pytest.mark.parametrize("shape", sorted(_MANAGED_CONFIG_SHAPES))
+    def test_a_shape_carrying_no_search_section_yields_the_documented_defaults(
+        self, shape: str, temp_dir: Path
+    ) -> None:
+        config = _load(temp_dir / "projctl.yaml", _MANAGED_CONFIG_SHAPES[shape])
+        search_config = config.get_search_config()
+        assert search_config.docs_path == "docs"
+        assert search_config.docs_path_configured is False
+        assert search_config.related == []
+
+    def test_a_legacy_shape_carrying_search_transforms_exactly_as_it_did_before(
+        self, temp_dir: Path
+    ) -> None:
+        legacy = _MANAGED_CONFIG_SHAPES["legacy-allowed-labels"]
+        without_search = _load(temp_dir / "without.yaml", legacy)
+        with_search = _load(temp_dir / "with.yaml", legacy + "search:\n  docs_path: docs\n")
+
+        # The transform whitelists gitlab/common/planning_sync, so search:
+        # must survive on the raw mapping without appearing on the transformed
+        # one — and the transformed one must be untouched by its presence.
+        assert with_search.config_data == without_search.config_data
+        assert "search" not in with_search.config_data
+        assert with_search.raw_config_data["search"] == {"docs_path": "docs"}

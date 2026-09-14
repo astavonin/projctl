@@ -17,13 +17,14 @@ except ImportError:
     print("Error: PyYAML is required. Install with: pip install PyYAML")
     sys.exit(1)
 
-from .config import Config, config_search_paths
+from .config import Config, ConfigurationError, config_search_paths
 from .exceptions import PlatformError
 from .handlers.activity import ActivityHandler
 from .handlers.artifacts_handler import ArtifactsHandler
 from .handlers.comment import cmd_comment
 from .handlers.ci_lint import CiLintHandler
 from .handlers.ci_run import cmd_ci_run
+from .handlers.docs_search import DocsSearchHandler
 from .handlers.labels import LabelsHandler
 from .handlers.note import NoteHandler
 from .handlers.merge import cmd_merge
@@ -181,6 +182,12 @@ def _dispatch_gitlab_search(searcher: SearchHandler, args) -> int:
     Returns:
         Exit code (0 for success, 1 for error).
     """
+    # --state/--limit moved to default=None on the subparser so docs can tell
+    # "not given" from "given as the default" (§5.1); the three existing
+    # types reapply their own documented defaults here, at the top.
+    state = args.state if args.state is not None else "all"
+    limit = args.limit if args.limit is not None else 20
+
     labels = None
     if getattr(args, "label", None):
         labels = [lbl for lbl in args.label if lbl.strip()]
@@ -194,11 +201,11 @@ def _dispatch_gitlab_search(searcher: SearchHandler, args) -> int:
         return 1
 
     if args.type == "issues":
-        searcher.search_issues(query=args.query, state=args.state, limit=args.limit, labels=labels)
+        searcher.search_issues(query=args.query, state=state, limit=limit, labels=labels)
     elif args.type == "epics":
-        searcher.search_epics(query=args.query, state=args.state, limit=args.limit, labels=labels)
+        searcher.search_epics(query=args.query, state=state, limit=limit, labels=labels)
     elif args.type == "milestones":
-        searcher.search_milestones(query=args.query, state=args.state, limit=args.limit)
+        searcher.search_milestones(query=args.query, state=state, limit=limit)
     else:
         logger.error("Unknown search type: %s", args.type)
         return 1
@@ -216,18 +223,24 @@ def _dispatch_github_search(gh_searcher: GithubSearchHandler, args) -> int:
     Returns:
         Exit code (0 for success, 1 for error).
     """
+    # See _dispatch_gitlab_search — --state moved to default=None on the
+    # subparser; GitHub reapplies only its own default ("all"), never a
+    # --limit, so GithubSearchHandler.search_issues()'s own limit=50 default
+    # still governs, unchanged from before this default-value move.
+    state = args.state if args.state is not None else "all"
+
     if getattr(args, "label", None):
         print("Error: --label filter is not supported for GitHub (GitLab only)", file=sys.stderr)
         return 1
     if args.type == "issues":
-        if args.state == "active":
+        if state == "active":
             print(
                 "Error: --state active is not supported for GitHub (milestone-only state)",
                 file=sys.stderr,
             )
             return 1
         # GitLab uses "opened"; the gh CLI expects "open"
-        gh_state = "open" if args.state == "opened" else args.state
+        gh_state = "open" if state == "opened" else state
         gh_searcher.search_issues(query=args.query, state=gh_state)
     elif args.type == "milestones":
         gh_searcher.search_milestones(query=args.query)
@@ -235,6 +248,62 @@ def _dispatch_github_search(gh_searcher: GithubSearchHandler, args) -> int:
         logger.error("Search type '%s' is not supported on GitHub", args.type)
         return 1
     return 0
+
+
+def _validate_docs_search_args(args) -> str | None:
+    """Return an error message naming the offending flag/query, or None when valid.
+
+    docs takes no --state/--limit/--label (they parse successfully because
+    they are declared on the shared subparser, then mean nothing for a
+    corpus that has no platform) and rejects an empty or whitespace-only
+    query, in the same validation shape _validate_label_for_gitlab_search()
+    uses for the three existing types.
+    """
+    if args.state is not None:
+        return "--state is not supported for 'docs' search"
+    if args.limit is not None:
+        return "--limit is not supported for 'docs' search"
+    if getattr(args, "label", None):
+        return "--label is not supported for 'docs' search"
+    if not args.query or not args.query.strip():
+        return "search docs requires a non-empty, non-whitespace-only query"
+    return None
+
+
+def cmd_search_docs(args) -> int:
+    """Handle 'search docs' — network-free, platform-independent, no Config gate.
+
+    Branches ahead of Config() construction in cmd_search() (before this
+    function is ever reached), so a purely local operation never inherits
+    the three existing types' hard FileNotFoundError or platform gate.
+
+    Args:
+        args: Parsed command-line arguments.
+
+    Returns:
+        Exit code (0 for success, 1 for error).
+    """
+    error = _validate_docs_search_args(args)
+    if error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+
+    try:
+        config_path = Path(args.config) if args.config else None
+        DocsSearchHandler().search(query=args.query, related=args.related, config_path=config_path)
+        return 0
+    except FileNotFoundError as err:
+        logger.error(str(err))
+        return 1
+    # OSError covers the whole read-fault family for the caller's own config
+    # — unreadable, a directory, a dead symlink — rather than the one member
+    # an enumeration would name; yaml.YAMLError is listed beside it because
+    # it derives from Exception, not ValueError, and Config does not wrap it.
+    # Either would otherwise reach the user as a traceback rather than the
+    # exit 1 §5.7 specifies.
+    except (OSError, PlatformError, ConfigurationError, ValueError, yaml.YAMLError) as err:
+        logger.error("Error: %s", err)
+        return 1
 
 
 def cmd_search(args) -> int:
@@ -246,6 +315,13 @@ def cmd_search(args) -> int:
     Returns:
         Exit code (0 for success, 1 for error).
     """
+    if args.type == "docs":
+        return cmd_search_docs(args)
+
+    if getattr(args, "related", False):
+        print(f"Error: --related is not supported for '{args.type}' search", file=sys.stderr)
+        return 1
+
     try:
         config_path = Path(args.config) if args.config else None
         config = Config(config_path)
@@ -818,11 +894,14 @@ def _add_search_subparser(subparsers: argparse._SubParsersAction) -> None:
     """Register the 'search' subcommand."""
     p = subparsers.add_parser(
         "search",
-        help="Search for issues, epics, or milestones by text",
+        help="Search for issues, epics, milestones, or the local docs/planning corpus",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument(
-        "type", choices=["issues", "epics", "milestones"], help="Type of resource to search"
+        "type",
+        choices=["issues", "epics", "milestones", "docs"],
+        help="Type of resource to search. 'docs' searches the local planning/docs corpus"
+        " (network-free, no config file required).",
     )
     p.add_argument(
         "query",
@@ -834,16 +913,26 @@ def _add_search_subparser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--state",
         choices=["opened", "closed", "active", "all"],
-        default="all",
-        help='Filter by state (default: all). Use "active" for milestones.',
+        default=None,
+        help='Filter by state (default: all; not supported for docs). Use "active" for milestones.',
     )
-    p.add_argument("--limit", type=int, default=20, help="Maximum number of results (default: 20)")
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Maximum number of results (default: 20; not" " supported for docs)",
+    )
     p.add_argument(
         "--label",
         action="append",
         dest="label",
         metavar="LABEL",
         help="Filter by label (can be repeated for multiple labels; issues and epics only)",
+    )
+    p.add_argument(
+        "--related",
+        action="store_true",
+        help="docs only: also search every project declared in this repo's search.related",
     )
 
 
@@ -1872,6 +1961,7 @@ Examples:
   %(prog)s load &21
   %(prog)s search issues "streaming"
   %(prog)s search epics --label "Iteration::1"
+  %(prog)s search docs "cross toolchain sysroot"
   %(prog)s comment planning/reviews/MR134-review.yaml
   %(prog)s create-mr --title "Add feature X" --draft
   %(prog)s sync push

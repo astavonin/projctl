@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ..config import Config
 from ..exceptions import PlatformError
+from ..utils.git_helpers import get_repo_root
 
 logger = logging.getLogger(__name__)
 
@@ -260,15 +261,9 @@ class PlanningSyncHandler:
             Path to repository root.
 
         Raises:
-            PlatformError: If not in a git repository.
+            PlatformError: If not in a git repository, or git is not installed.
         """
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True
-            )
-            return Path(result.stdout.strip())
-        except subprocess.CalledProcessError as err:
-            raise PlatformError("Not in a git repository. Planning sync requires git.") from err
+        return get_repo_root(context="Planning sync")
 
     def _detect_repo_name(self) -> str:
         """Detect current git repository name.

@@ -16,3 +16,10 @@ common:
 # Planning sync configuration
 planning_sync:
   gdrive_base: ~/GoogleDrive
+
+# Local docs/planning corpus search configuration (optional)
+search:
+  docs_path: "docs"
+  related:
+    - "../pi-cam-capture"
+    - "../pi-bazel"

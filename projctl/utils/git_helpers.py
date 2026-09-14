@@ -198,6 +198,39 @@ def get_gitlab_base_url() -> str:
     return ""
 
 
+def get_repo_root(cwd: Optional[Path] = None, *, context: str = "this command") -> Path:
+    """Resolve the enclosing git repository's root directory.
+
+    Args:
+        cwd: Directory to resolve from; None uses the process's own.
+        context: Names the caller in every error message, e.g. "Planning sync"
+            or "'projctl search docs'".
+
+    Returns:
+        Path to the repository root, as git reports it.
+
+    Raises:
+        PlatformError: If git is not installed, `cwd` is not inside a work
+            tree, or git returned an empty path.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=cwd,
+        )
+    except FileNotFoundError as err:
+        raise PlatformError(f"git executable not found on PATH — {context} requires git.") from err
+    if result.returncode != 0:
+        raise PlatformError(f"Not in a git repository. {context} requires git.")
+    toplevel = result.stdout.strip()
+    if not toplevel:
+        raise PlatformError("'git rev-parse --show-toplevel' returned no path")
+    return Path(toplevel)
+
+
 def get_current_branch() -> str:
     """Get the checked-out branch name.
 

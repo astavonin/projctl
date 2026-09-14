@@ -19,6 +19,17 @@ Create issues and epics from YAML files that mirror the shape of the planning ar
 
 The `comment` command is the bridge between a `code-review.md` artifact and the actual merge request: it posts inline diff comments per finding, replies to and resolves discussion threads, and issues approve or unapprove — all from a single YAML file. `create-mr` opens the MR itself with template enforcement, so required sections and default reviewers are applied consistently across every submission. `merge` closes the loop: it gates each MR on state, draft status, mergeability, unresolved threads, and its head pipeline before merging, and can land a stacked chain in order — waiting for GitLab to retarget each remaining MR, and rebasing them where the project is fast-forward only.
 
+### Local docs search
+
+`projctl search docs "cross toolchain sysroot"` ranks the current repository's `planning/` tree and
+docs root — and, with `--related`, every project declared in `search.related` — into a bounded
+Markdown digest of prior decisions and the current roadmap. It runs offline: no config file, no
+network call, and no platform gate, unlike the other `search` types. Ranking sees a fixed candidate
+cap of the best-scoring units plus every open-failure record, so an ambient query is bounded by that
+cap as well as by the word budget, and the footer names each count separately.
+
+`projctl --verbose search docs "<query>"` turns on the debug channel — every resolved corpus root with its origin, every skipped path with its reason, and the score components of each unit that matched a query token, including the ones the digest did not show. The digest carries no error channel of its own, so this is the route to answering why an expected document did not appear.
+
 ### Planning sync
 
 `projctl sync` rsyncs the local `./planning/` folder to Google Drive with drift detection: `sync status` reports `in-sync`, `local-ahead`, `remote-ahead`, or `diverged` before any files move, so switching machines starts from a known state. This is what keeps the workflow's persistent context alive across session resets — pull before starting work, push when finishing, and the same planning tree is available on the next machine.

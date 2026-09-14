@@ -1,7 +1,9 @@
 """Configuration management for CI Platform Manager."""
 
+import copy
 import logging
 import warnings
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -15,6 +17,12 @@ from .utils.git_helpers import get_current_repo_path
 
 _LEGACY_CONFIG_NAMES: frozenset[str] = frozenset({"glab_config.yaml"})
 
+# The two project-local config filenames, in search priority order. A single
+# constant shared by config_search_paths() (cwd-anchored search) and by
+# projctl/handlers/docs_search.py (per-project-root probe for `search docs
+# --related`) so the two call sites cannot silently disagree about order.
+PROJECT_LOCAL_CONFIG_NAMES: tuple[str, str] = ("glab_config.yaml", "projctl.yaml")
+
 
 def config_search_paths() -> list[tuple[Path, str]]:
     """Return the default config search paths with human-readable labels.
@@ -23,9 +31,10 @@ def config_search_paths() -> list[tuple[Path, str]]:
         List of (path, label) pairs in priority order (first found wins).
         Does not include the --config explicit-path option.
     """
+    legacy_name, preferred_name = PROJECT_LOCAL_CONFIG_NAMES
     return [
-        (Path.cwd() / "glab_config.yaml", "./glab_config.yaml (project-local, legacy)"),
-        (Path.cwd() / "projctl.yaml", "./projctl.yaml (project-local, preferred)"),
+        (Path.cwd() / legacy_name, f"./{legacy_name} (project-local, legacy)"),
+        (Path.cwd() / preferred_name, f"./{preferred_name} (project-local, preferred)"),
         (
             Path.home() / ".config" / "projctl" / "config.yaml",
             "~/.config/projctl/config.yaml (user config)",
@@ -35,6 +44,20 @@ def config_search_paths() -> list[tuple[Path, str]]:
             "~/.config/glab_config.yaml (user config, legacy)",
         ),
     ]
+
+
+@dataclass(frozen=True)
+class SearchConfig:
+    """Resolved `search:` section — the docs corpus path and related-project declarations.
+
+    docs_path_configured distinguishes a defaulted "docs" (a probe: a missing
+    directory is silence) from an explicitly configured value (an assertion: a
+    missing directory warns) — see docs_search.py's CorpusResolver.
+    """
+
+    docs_path: Optional[str]
+    docs_path_configured: bool
+    related: List[str] = field(default_factory=list)
 
 
 # Known field names per template; unknown entries emit a UserWarning via _warn_unknown_fields.
@@ -87,6 +110,12 @@ class Config:
         self.config_data: Dict[str, Any] = {}
         self.loaded_config_path: Optional[Path] = None
         self.planning_sync: Dict[str, Any] = {}
+        # The as-parsed YAML mapping, before legacy transformation — search:
+        # and the raw platform: provenance read this one (see
+        # get_search_config / get_raw_platform_or_undeclared), because the
+        # legacy transform whitelists gitlab/common/planning_sync and would
+        # silently drop an unrecognised top-level key such as search:.
+        self.raw_config_data: Dict[str, Any] = {}
 
         self.config_data = self._load_config_with_legacy_support(config_path)
         self.platform = platform or self.config_data.get("platform", "gitlab")
@@ -154,6 +183,11 @@ class Config:
             config = yaml.safe_load(config_file) or {}
 
         self.loaded_config_path = config_path
+        # A deep copy, not the same object: on the non-legacy path config_data
+        # is this very mapping, so sharing it would let any later write to
+        # config_data — including __init__'s platform default — surface
+        # through the "raw" accessors as a value the file never declared.
+        self.raw_config_data = copy.deepcopy(config)
         logger.info("Loaded configuration from: %s", config_path)
         # Detect and transform old format
         is_old_format = "labels" in config and "platform" not in config
@@ -504,6 +538,82 @@ class Config:
                 "with a GitHub remote."
             )
         return detected
+
+    def get_search_config(self) -> SearchConfig:
+        """Return the `search:` section: docs corpus path and related-project declarations.
+
+        Reads the raw pre-transform mapping (see raw_config_data), so an
+        absent search: key yields the defaults with no error and a legacy
+        (pre-platform:) config that happens to carry search: is not silently
+        dropped by the legacy transform.
+
+        Returns:
+            SearchConfig with docs_path defaulted to "docs" and related
+            defaulted to [] when the key is absent.
+
+        Raises:
+            ConfigurationError: If search: is present and not a mapping
+                (`search: null` included — a present key asserts a shape),
+                if docs_path is present and not a string or null, or if
+                related is present and not a list of strings (naming the
+                offending index).
+        """
+        if "search" not in self.raw_config_data:
+            return SearchConfig(docs_path="docs", docs_path_configured=False, related=[])
+        raw = self.raw_config_data["search"]
+        if not isinstance(raw, dict):
+            raise ConfigurationError(f"search must be a mapping, got {type(raw).__name__!r}")
+
+        docs_path_configured = "docs_path" in raw
+        docs_path = raw.get("docs_path", "docs")
+        if docs_path is not None and not isinstance(docs_path, str):
+            raise ConfigurationError(
+                f"search.docs_path must be a string or null, got {type(docs_path).__name__!r}"
+            )
+
+        related_raw = raw.get("related", [])
+        if not isinstance(related_raw, list):
+            raise ConfigurationError(
+                f"search.related must be a list of strings, got {type(related_raw).__name__!r}"
+            )
+        related: List[str] = []
+        for idx, item in enumerate(related_raw):
+            if not isinstance(item, str):
+                raise ConfigurationError(
+                    f"search.related[{idx}] must be a string, got {type(item).__name__!r}"
+                )
+            related.append(item)
+
+        return SearchConfig(
+            docs_path=docs_path, docs_path_configured=docs_path_configured, related=related
+        )
+
+    def get_raw_platform_or_undeclared(self) -> str:
+        """Return this config's own platform: value, or "undeclared" when absent.
+
+        Unlike self.platform (which defaults to "gitlab" for backward-compatible
+        dispatch — see __init__), this reads the raw pre-transform mapping so a
+        project with no platform: key surfaces as a distinct third state rather
+        than a confident default it never declared. Used for docs-search
+        provenance (FR-29), never for platform dispatch.
+
+        Returns:
+            The raw platform string, or "undeclared" when the key is absent.
+
+        Raises:
+            ConfigurationError: If platform: is a mapping or a list. Neither
+                names a platform, and str() would render one as its Python
+                repr into the digest reporting this project's provenance
+                rather than reporting the config as malformed.
+        """
+        raw_platform = self.raw_config_data.get("platform")
+        if raw_platform is None:
+            return "undeclared"
+        if isinstance(raw_platform, (dict, list)):
+            raise ConfigurationError(
+                f"platform must name one platform, got {type(raw_platform).__name__!r}"
+            )
+        return str(raw_platform)
 
     def _load_planning_sync(self) -> None:
         """Load planning sync configuration from config file.

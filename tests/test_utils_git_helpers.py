@@ -4,7 +4,15 @@ import subprocess
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from projctl.utils.git_helpers import extract_host_from_url, get_current_repo_path, parse_mr_url
+import pytest
+
+from projctl.exceptions import PlatformError
+from projctl.utils.git_helpers import (
+    extract_host_from_url,
+    get_current_repo_path,
+    get_repo_root,
+    parse_mr_url,
+)
 
 
 class TestExtractHostFromUrl:
@@ -200,3 +208,37 @@ class TestGetCurrentRepoPath:
         call_args = mock_run.call_args
         assert "cwd" in call_args.kwargs
         assert call_args.kwargs["cwd"] == Path.cwd()
+
+
+class TestGetRepoRoot:
+    """The single repo-root resolver shared by the sync and docs-search handlers."""
+
+    def test_successful_call_returns_the_toplevel_path(self) -> None:
+        completed = subprocess.CompletedProcess(["git"], 0, "/repo/root\n", "")
+        with patch("projctl.utils.git_helpers.subprocess.run", return_value=completed):
+            assert get_repo_root() == Path("/repo/root")
+
+    def test_git_not_installed_raises_platform_error_naming_the_caller(self) -> None:
+        with patch(
+            "projctl.utils.git_helpers.subprocess.run", side_effect=FileNotFoundError("git")
+        ):
+            with pytest.raises(PlatformError, match="git executable not found"):
+                get_repo_root(context="Planning sync")
+
+    def test_outside_a_work_tree_raises_platform_error_naming_the_caller(self) -> None:
+        completed = subprocess.CompletedProcess(["git"], 128, "", "not a git repository")
+        with patch("projctl.utils.git_helpers.subprocess.run", return_value=completed):
+            with pytest.raises(PlatformError, match="Planning sync requires git"):
+                get_repo_root(context="Planning sync")
+
+    def test_empty_toplevel_output_raises_platform_error(self) -> None:
+        completed = subprocess.CompletedProcess(["git"], 0, "\n", "")
+        with patch("projctl.utils.git_helpers.subprocess.run", return_value=completed):
+            with pytest.raises(PlatformError, match="returned no path"):
+                get_repo_root()
+
+    def test_the_requested_directory_is_passed_to_git(self, tmp_path: Path) -> None:
+        completed = subprocess.CompletedProcess(["git"], 0, "/repo/root\n", "")
+        with patch("projctl.utils.git_helpers.subprocess.run", return_value=completed) as run:
+            get_repo_root(tmp_path)
+        assert run.call_args.kwargs["cwd"] == tmp_path

@@ -795,7 +795,7 @@ make format    # apply black formatting
 
 ### Runtime Dependencies
 
-- **Python** >= 3.7
+- **Python** >= 3.9
 - **PyYAML** >= 5.4 - YAML parsing
 - **glab** CLI - GitLab operations
 - **rsync** - Planning folder sync (system package)

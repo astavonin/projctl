@@ -31,6 +31,7 @@ projctl/
 │   ├── ci_lint.py             # Validate CI configuration (GitLab)
 │   ├── ci_run.py              # Create and await a pipeline (GitLab)
 │   ├── comment.py             # Post MR/PR review comments
+│   ├── docs_search.py         # Search local planning/docs corpus (offline, no platform)
 │   ├── creator.py             # Create issues/epics/milestones (GitLab)
 │   ├── github_creator.py      # Create issues (GitHub)
 │   ├── github_loader.py       # Load issues/PRs/milestones (GitHub)
@@ -129,6 +130,14 @@ common:
 # Planning sync settings
 planning_sync:
   gdrive_base: ~/GoogleDrive  # Machine-specific path
+
+# Local docs/planning corpus search settings — see "Local Docs Search" below.
+# Optional; absent means: docs_path defaults to "docs", related defaults to [].
+search:
+  docs_path: "docs"          # default "docs"; null means this project has no docs corpus
+  related:                   # explicit paths to related projects; ~ and absolute accepted
+    - "../pi-cam-capture"
+    - "../pi-bazel"
 ```
 
 **Required vs Optional Fields:**
@@ -332,6 +341,24 @@ projctl search issues "bug" --state opened --limit 10
 projctl search epics "video"
 projctl search milestones "v1.0" --state active
 ```
+
+### Local Docs Search
+
+Search the current repository's `planning/` tree and docs root — and, with `--related`, every project
+declared in `search.related` — for prior decisions, observed-failure records, and the current roadmap.
+Network-free, platform-independent: no config file is required, no GitLab/GitHub API call is made, and
+`--state`/`--limit`/`--label` (meaningless for a corpus with no platform) are rejected if given.
+
+```bash
+projctl search docs "cross toolchain sysroot"
+projctl search docs "cross toolchain sysroot" --related
+```
+
+Every Markdown section under both corpora is classified into `failure`, `alternative`, `constraint`, `docs`, `roadmap`, or the `untyped` fallback tier (most of any corpus — see design.md), scored with a hand-rolled BM25 plus a heading-match boost, cut to a fixed candidate cap by base score — plus every open-failure record, which is exempt from the cut and pinned ahead of the rest — and rendered as a ~1,000-word, two-part digest: `## Roadmap` (unranked, folded from `overview.md`/`status.md`) then `## Prior decisions` (relevance-ranked). Each half renders in three tiers against its own share: a unit that fits emits its full entry, a unit over the remaining share degrades to a locator (path + heading chain, no body) rather than being truncated, and units past an exhausted share are dropped and counted — so the digest is sized by the budget rather than by how many units matched. The footer names the resolved corpus, each query token's document frequency, every skipped path with its reason, how many entries each half dropped for want of budget, and how many the candidate cap left unranked — nothing is silently omitted, and the two causes are never summed into one number.
+
+`projctl --verbose search docs "<query>"` turns on the debug channel — every resolved corpus root with its origin, every skipped path with its reason, and the score components of each unit that matched a query token, including the ones the digest did not show. The digest carries no error channel of its own, so this is the route to answering why an expected document did not appear.
+
+**Handler:** `handlers/docs_search.py` — `DocsSearchHandler` class
 
 ### Update Resources
 
@@ -570,7 +597,7 @@ the only way to enumerate thread ids in the first place.
 **Selectors.** `--discussion` takes a full id or a unique prefix; `--match` takes a substring
 matched against a thread's *first* note. Both are repeatable and may be mixed. A selector that
 hits zero threads, or more than one, is a hard error naming the candidates — never a silent
-no-op and never a batch resolve. There is deliberately no `--all`: resolving the wrong thread
+no-op and never a batch resolve. There is no `--all`: resolving the wrong thread
 silently marks a review finding as handled, so every thread must be named.
 
 **Exit codes.** `0` when every selected thread reached the target state or was already there.
@@ -617,7 +644,7 @@ projctl timelog add "!235" 30m --dry-run          # MR !235, preview only
 Report output is a per-day total, a per-issue (or per-MR) breakdown within each day, and a grand total across the window — always preceded by the exact window queried and the GitLab identity queried as, even when the result is empty. A zero result is reported as "no timelogs returned for this window", never as a confident "you logged nothing", because an empty result caused by `glab` resolving the wrong host would look identical otherwise.
 
 **Behavior notes — report:**
-- The date window is **local calendar days**, built from the machine's system timezone — not UTC days. There is no config key or flag for the offset; output is machine-dependent by design.
+- The date window is **local calendar days**, built from the machine's system timezone — not UTC days. There is no config key or flag for the offset, so output is machine-dependent.
 - Before querying timelogs, the handler resolves the authenticated user via GraphQL `currentUser`. A `null` result is a **hard error** naming the likely cause (`glab` resolved to a host with no GitLab remote in the current directory), not an empty report — this is the command's main safety property, since a misdirected query would otherwise look exactly like "nothing logged".
 - Entries are **never deduplicated**: two timelogs with identical timestamp and duration on the same issue in the same day are both counted, since GitLab's own data contains exactly that shape.
 - An entry attached to a merge request rather than an issue (`issue: null`, `mergeRequest` populated) renders with an `!N` marker instead of being dropped.
@@ -720,7 +747,7 @@ projctl ci run --branch master --dry-run
 
 **Behavior notes:**
 - **Exit codes are a three-way contract**, matching `ci lint`'s reasoning but with different meanings: `0` the pipeline was created (and succeeded, under `--wait`), `1` it was created but did not succeed, `2` it could not be created at all. A caller that collapses 1 and 2 would report a failing build every time a token expired.
-- **`--dry-run` here is projctl's usual one**, unlike `ci lint`'s: it reports the pipeline that would be created and makes no API call. The two `--dry-run` flags under `ci` deliberately differ because `lint`'s is `glab`'s own flag.
+- **`--dry-run` here is projctl's usual one**, unlike `ci lint`'s: it reports the pipeline that would be created and makes no API call. The two `--dry-run` flags under `ci` differ because `lint`'s is `glab`'s own flag.
 - The default ref is the checked-out branch, read via `utils/git_helpers.py` → `get_current_branch()`. A detached HEAD is a hard error naming `--branch`, since there is no branch to run against.
 - A malformed `--variable` is rejected before the API call. Silently dropping one would produce a pipeline that looks right and behaves differently.
 - `--wait` polls for up to an hour (240 × 15s) and returns the status GitLab reports. `manual` and `skipped` count as terminal — the pipeline will not change without another event — and only `success` exits 0. A pipeline that finished green solely because every failed job carried `allow_failure` still reports `success`; use `merge --dry-run`, which lists those jobs as `masked`, when that distinction matters.
@@ -1063,7 +1090,7 @@ Individual linters (all in `.venv/bin/`):
 
 ### Runtime Dependencies
 
-- **Python** >= 3.7
+- **Python** >= 3.9
 - **PyYAML** >= 5.4 - YAML parsing
 - **glab** CLI - GitLab operations
 - **gh** CLI - GitHub operations
