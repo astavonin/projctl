@@ -6,15 +6,18 @@
 
 `projctl search docs "<query>" [--related]` ranks Markdown sections from the
 current repository's `planning/` tree and docs root (and, under `--related`,
-every project declared in `search.related`) and renders a bounded two-part
-Markdown digest: `## Roadmap` (unranked, from `overview.md`/`status.md`) then
-`## Prior decisions` (BM25-ranked). No Config gate, no platform dispatch, no
-network — matching `ActivityHandler`'s precedent (see its module docstring).
+every project declared in `search.related`) and renders a two-part Markdown
+digest: `## Roadmap` (unranked, from `overview.md`/`status.md`) then
+`## Prior decisions`, a locator table with one row per matched unit
+(BM25-ranked; a candidate cap bounds only the quadratic diversity-reordering
+pass, not how many rows are emitted). No Config gate, no platform dispatch,
+no network — matching `ActivityHandler`'s precedent (see its module
+docstring).
 
 Five components, one direction of flow (see design.md §4/§5):
 CorpusResolver (which directories) -> SectionExtractor (which units) ->
 Bm25Ranker (in what order) + RoadmapIndex (what is live) -> DocsDigest
-(what fits).
+(how it renders).
 """
 
 from __future__ import annotations
@@ -44,9 +47,6 @@ BM25_B = 0.75
 HEADING_BOOST = 2.5
 FILE_DECAY = 0.5
 DIRECTORY_DECAY = 0.75
-WORD_BUDGET = 1000
-ROADMAP_SHARE = 0.30
-PRIOR_DECISIONS_SHARE = 0.70
 CASE_EXACT_MIN_LEN = 2
 CASE_EXACT_MAX_LEN = 5
 ROADMAP_SCOPE_WORD_CAP = 25
@@ -56,15 +56,14 @@ RANKED_CANDIDATE_CAP = 200
 def _assert_ranking_policy_shape() -> None:
     """Validate the ranking-policy block's own invariants at import time.
 
-    A future edit leaving the two shares out of sync, or picking a
-    non-positive decay/budget, would silently misbudget every digest instead
-    of failing loudly — this is RSYNC_EXCLUDES's shape-assertion pattern
+    A future edit picking a non-positive decay factor or an empty
+    case-exact window would silently mis-rank every query instead of
+    failing loudly — this is RSYNC_EXCLUDES's shape-assertion pattern
     applied to this block. It raises rather than asserting so `python -O`
     cannot strip the guard the docstring above claims.
 
     Raises:
-        ValueError: If any constant in the block falls outside its range, or
-            the two shares do not sum to 1.0.
+        ValueError: If any constant in the block falls outside its range.
     """
     checks = (
         (BM25_K1 > 0.0, "BM25_K1 must be positive"),
@@ -72,11 +71,6 @@ def _assert_ranking_policy_shape() -> None:
         (HEADING_BOOST > 1.0, "HEADING_BOOST must amplify, not shrink or leave unchanged"),
         (0.0 < FILE_DECAY < 1.0, "FILE_DECAY must be a genuine decay factor"),
         (0.0 < DIRECTORY_DECAY < 1.0, "DIRECTORY_DECAY must be a genuine decay factor"),
-        (WORD_BUDGET > 0, "WORD_BUDGET must be positive"),
-        (
-            abs((ROADMAP_SHARE + PRIOR_DECISIONS_SHARE) - 1.0) < 1e-9,
-            "ROADMAP_SHARE and PRIOR_DECISIONS_SHARE must sum to 1.0",
-        ),
         (1 <= CASE_EXACT_MIN_LEN <= CASE_EXACT_MAX_LEN, "case-exact window must be non-empty"),
         (ROADMAP_SCOPE_WORD_CAP > 0, "ROADMAP_SCOPE_WORD_CAP must be positive"),
         (RANKED_CANDIDATE_CAP > 0, "RANKED_CANDIDATE_CAP must be positive"),
@@ -213,13 +207,6 @@ _FENCE_RE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
 _BOLD_FIELD_RE = re.compile(r"^\*\*([^*:]+):\*\*\s*(.*)$")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 _LIST_MARKER_RE = re.compile(r"^(?:[-*+]|\d+[.)])(?:\s+|$)")
-# A setext underline of any length, and every thematic-break spelling: both
-# read as digest structure to a consumer splitting on headings or on the
-# footer's own `---` boundary (FR-35). CommonMark lets any run of spaces or
-# tabs separate the three break characters, so the separator is matched as a
-# run rather than as the single space an earlier spelling of this pattern
-# demanded.
-_SETEXT_RULE_RE = re.compile(r"^(?:-+|=+|(?:[-*_][ \t]*){3,})[ \t]*$")
 _STRIP_CHARS = ".,;:?()[]{}\"'`"
 
 
@@ -434,8 +421,8 @@ class Hit:
     """
 
     # pylint: disable=too-many-instance-attributes
-    # Provenance (FR-22) is five of these nine on its own — repo, platform,
-    # kind, path, heading chain — and splitting it out would put the rendered
+    # Provenance (FR-22) is four of these eight on its own — repo, kind,
+    # path, heading chain — and splitting it out would put the rendered
     # locator one indirection away from the unit it locates.
 
     path: Path
@@ -445,7 +432,6 @@ class Hit:
     cost_words: int
     fields: dict[str, str]
     repo: str
-    platform: str
     project_root: Path
 
 
@@ -548,9 +534,7 @@ class SectionExtractor:
         self._skips: list[Skip] = []
         self._read_faults = 0
 
-    def extract(
-        self, path: Path, *, corpus: str, repo: str, platform: str, project_root: Path
-    ) -> list[Hit]:
+    def extract(self, path: Path, *, corpus: str, repo: str, project_root: Path) -> list[Hit]:
         """Return every section in `path`, or none (with a recorded Skip) on a read fault.
 
         A file that cannot be stat'ed, opened, or decoded as UTF-8 is skipped
@@ -587,7 +571,6 @@ class SectionExtractor:
                     cost_words=len(body.split()),
                     fields=fields,
                     repo=repo,
-                    platform=platform,
                     project_root=project_root,
                 )
             )
@@ -631,10 +614,18 @@ def _is_open_failure(hit: Hit) -> bool:
 
 @dataclass(frozen=True)
 class ScoredHit:
-    """One Hit with its final BM25 x boost x diversity-decay score."""
+    """One Hit with its diversity-decayed score and its undecayed base score.
+
+    `score` is what `_greedy_diversify` computed the row by and what the
+    NFR-9 debug channel's `final=` reports; `base_score` is what the locator
+    table's `score` column renders (§5.6) — the two coincide only where decay
+    left a row unchanged, which every surplus-pin and tail row does by
+    construction, since neither one passes through diversification.
+    """
 
     hit: Hit
     score: float
+    base_score: float
 
 
 @dataclass(frozen=True)
@@ -690,15 +681,10 @@ class Bm25Ranker:
         # passes the ranker used to make (NFR-1).
         self._tf_table = [[_term_evidence(p, hit) for p in self._patterns] for hit in self._hits]
         self._doc_freq = self._compute_doc_frequency()
-        self._omitted = 0
 
     def doc_frequency(self) -> dict[str, int]:
         """Return each query token's document frequency — the section count sharing the BM25 idf term."""
         return dict(self._doc_freq)
-
-    def omitted(self) -> int:
-        """Return how many unpinned matched units the candidate cap dropped before ranking."""
-        return self._omitted
 
     def _compute_doc_frequency(self) -> dict[str, int]:
         freq: dict[str, int] = {}
@@ -735,16 +721,18 @@ class Bm25Ranker:
         )
 
     def rank(self) -> list[ScoredHit]:
-        """Return the retained matched Hits, decay-diversified then pin-reordered.
+        """Return every matched Hit: decay-diversified at the head, pin-reordered throughout.
 
-        Diversification is O(n^2) in its input, so the **unpinned** candidate
-        set is capped at RANKED_CANDIDATE_CAP by base score first — several
-        times what the half's budget can render, and the difference is
-        ordering work whose result the budget discards. Open-failure units
-        are partitioned out before the cap applies: FR-16 puts them ahead of
-        every other unit whatever their score, so a cap that could discard
-        one would make the guarantee conditional on exactly what it
-        overrides. omitted() reports the remainder so the footer can name it.
+        Diversification is O(n^2) in its input, so the candidate set entering
+        it is capped at RANKED_CANDIDATE_CAP by base score — every matched
+        unit still reaches the caller (§5.6), but only the head is reordered
+        by decay; the tail is appended in plain descending score, which is
+        the ordering work the cap exists to bound. Open-failure units fill
+        the bound first, in score order: FR-16 puts them ahead of every other
+        unit whatever their score, so a bound that could displace one would
+        make the guarantee conditional on exactly what it overrides. Where
+        the pin set alone exceeds the bound, the surplus pins are still
+        emitted, undiversified, ahead of every unpinned row.
         """
         matched = [
             (self._hits[index], self._score_parts(index))
@@ -763,16 +751,31 @@ class Bm25Ranker:
         )
         pinned = [pair for pair in scored if _is_open_failure(pair[0])]
         unpinned = [pair for pair in scored if not _is_open_failure(pair[0])]
-        self._omitted = max(0, len(unpinned) - RANKED_CANDIDATE_CAP)
 
-        candidates = pinned + unpinned[:RANKED_CANDIDATE_CAP]
-        ordered = _greedy_diversify([(hit, parts.total) for hit, parts in candidates])
+        diversify_pins = pinned[:RANKED_CANDIDATE_CAP]
+        surplus_pins = pinned[RANKED_CANDIDATE_CAP:]
+        remaining_slots = RANKED_CANDIDATE_CAP - len(diversify_pins)
+        diversify_unpinned = unpinned[:remaining_slots]
+        tail_unpinned = unpinned[remaining_slots:]
+
+        diversified = _greedy_diversify(
+            [(hit, parts.total) for hit, parts in diversify_pins + diversify_unpinned]
+        )
+        undiversified = [
+            ScoredHit(hit=hit, score=parts.total, base_score=parts.total)
+            for hit, parts in surplus_pins + tail_unpinned
+        ]
+
+        ordered = (
+            [sh for sh in diversified if _is_open_failure(sh.hit)]
+            + undiversified[: len(surplus_pins)]
+            + [sh for sh in diversified if not _is_open_failure(sh.hit)]
+            + undiversified[len(surplus_pins) :]
+        )
 
         self._log_score_components(matched, ordered)
 
-        return [sh for sh in ordered if _is_open_failure(sh.hit)] + [
-            sh for sh in ordered if not _is_open_failure(sh.hit)
-        ]
+        return ordered
 
     @staticmethod
     def _log_score_components(
@@ -832,8 +835,8 @@ def _greedy_diversify(candidates: list[tuple[Hit, float]]) -> list[ScoredHit]:
             if effective > best_effective:
                 best_effective = effective
                 best_idx = idx
-        hit, _base_score_value = remaining.pop(best_idx)
-        ordered.append(ScoredHit(hit=hit, score=best_effective))
+        hit, base_score = remaining.pop(best_idx)
+        ordered.append(ScoredHit(hit=hit, score=best_effective, base_score=base_score))
         file_picks[hit.path] = file_picks.get(hit.path, 0) + 1
         dir_picked_files.setdefault(hit.path.parent, set()).add(hit.path)
 
@@ -983,12 +986,13 @@ class ResolvedProject:
 
     `project_root` is the identity, not `repo`: `repo` is the directory
     basename, and two declared projects can share one. Keying on the
-    basename merges their footer rows and attributes one project's platform
-    to both (FR-22).
+    basename would merge two distinct projects' `indexed_files` and
+    `root_kinds` into a single entry (FR-22); the footer's rendering step
+    disambiguates same-named projects by parent directory name instead
+    (§5.6), since neither field this dataclass carries is unique on its own.
     """
 
     repo: str
-    platform: str
     project_root: Path
     root_kinds: list[str] = field(default_factory=list)
     indexed_files: int = 0
@@ -1202,7 +1206,6 @@ class CorpusResolver:
         self._resolved_projects.append(
             ResolvedProject(
                 repo=repo,
-                platform=platform,
                 project_root=project_root,
                 root_kinds=[r.corpus for r in roots],
             )
@@ -1334,74 +1337,36 @@ def _walk_corpus_roots(roots: list[CorpusRoot]) -> tuple[list[tuple[CorpusRoot, 
 
 
 @dataclass(frozen=True)
-class RoadmapLine:
-    """One roadmap entry as it will render: in full, or degraded to a locator."""
-
-    entry: RoadmapEntry
-    locator_only: bool
-
-
-@dataclass(frozen=True)
-class RankedLine:
-    """One ranked hit as it will render: in full, or degraded to a locator."""
-
-    scored: ScoredHit
-    locator_only: bool
-
-
-@dataclass(frozen=True)
 class DocsDigest:
-    """Frozen digest result: two ordered halves plus the footer — renders Markdown."""
+    """Frozen digest result: a roadmap block, a locator table, and the footer.
 
-    # pylint: disable=too-many-instance-attributes
-    # The footer's whole purpose is that a partial result cannot read as a
-    # complete one (§5.6), so each thing it must disclose — what each half
-    # dropped, what was never ranked, what was skipped, what resolved — is
-    # its own field. ranked_dropped and ranked_omitted stay apart because
-    # they report different losses: a budget-dropped unit was ranked and then
-    # did not fit, a cap-omitted one was never ranked at all, so one summed
-    # number would name neither cause.
+    `matched_unit_total` is an output contract, not a derived convenience
+    (§5.6): a consumer that pastes only a slice of `ranked_hits` reads its own
+    "N of M shown" line's M from here, never from a row count, so the field
+    must hold even when the caller reads a truncated `ranked_hits`.
+    """
 
-    roadmap_lines: list[RoadmapLine]
-    roadmap_dropped: int
-    ranked_lines: list[RankedLine]
-    ranked_dropped: int
-    ranked_omitted: int
+    roadmap_entries: list[RoadmapEntry]
+    ranked_hits: list[ScoredHit]
+    matched_unit_total: int
     doc_frequency: dict[str, int]
     resolved_projects: list[ResolvedProject]
     skips: list[Skip]
     zero_related: bool
 
     def render_markdown(self) -> str:
-        """Render the full digest: Roadmap, then Prior decisions, then the footer."""
+        """Render the full digest: Roadmap, then the locator table, then the footer."""
         parts = ["## Roadmap", ""]
-        parts.extend(_render_roadmap_line(line) for line in self.roadmap_lines)
+        parts.extend(_render_roadmap_entry(entry) for entry in self.roadmap_entries)
         parts.append("")
         parts.append("## Prior decisions")
         parts.append("")
-        parts.extend(_render_ranked_line(line) for line in self.ranked_lines)
+        parts.append("| " + " | ".join(_TABLE_COLUMNS) + " |")
+        parts.append("|" + "|".join(["---"] * len(_TABLE_COLUMNS)) + "|")
+        parts.extend(_render_table_row(scored) for scored in self.ranked_hits)
         parts.append("")
         parts.append(_render_footer(self))
         return "\n".join(parts)
-
-
-def _neutralize_body(body: str) -> str:
-    """Escape every body line that a heading-splitting consumer could misread (FR-35).
-
-    Two shapes qualify: a leading '#', and a setext-or-thematic rule line,
-    which is a heading under any non-blank line and is also the digest's own
-    footer boundary. Applies inside fenced bodies too — a shell comment
-    quoted in a code sample renders with a leading backslash, because a
-    mis-split digest costs more than a decorated comment.
-    """
-    out_lines = []
-    for text_line in body.splitlines():
-        stripped = text_line.lstrip(" ")
-        indent = len(text_line) - len(stripped)
-        if stripped.startswith("#") or _SETEXT_RULE_RE.match(stripped):
-            text_line = f"{text_line[:indent]}\\{text_line[indent:]}"
-        out_lines.append(text_line)
-    return "\n".join(out_lines)
 
 
 def _one_line(text: str) -> str:
@@ -1418,63 +1383,108 @@ def _one_line(text: str) -> str:
     return " ".join(text.split())
 
 
-def _kind_annotation(kind: str) -> str:
-    """Return `kind` for rendering, raising on an unrecognized value (FR-11)."""
-    return _validate_kind(kind)
+def _escape_cell(text: str) -> str:
+    """Collapse `text` to one line and escape `\\` and `|` for a Markdown table cell (§5.6).
 
-
-def _provenance(hit: Hit) -> str:
-    """Render `repo (platform) [kind] path §heading › chain` (FR-22).
-
-    `repo`, `platform` and the path are corpus- or config-derived and carry
-    no shape of their own — `platform` is whatever another project's config
-    file declares, and POSIX admits a newline in a directory name — so each
-    is collapsed before it is interpolated into the list item this returns.
-    The heading chain needs no collapsing: _split_sections matches a heading
-    against one line at a time, so no heading holds a line break.
+    The backslash must be escaped before the pipe: escaping `|` alone turns
+    a source `\\|` into `\\\\|`, where cmark-gfm reads the doubled backslash
+    as one escaped backslash and the pipe after it as a live, unescaped
+    delimiter — the exact row-splitting bug this ordering exists to prevent.
+    Escaping the backslash first makes the source pipe the only thing left
+    for the following `.replace("|", ...)` to see, so it is always escaped
+    in turn. An embedded newline ends the row early, which is `_one_line`'s
+    half of the guarantee. Both channels are load-bearing on `path` (a
+    filesystem path) and `repo` (a sibling checkout's directory name under
+    `--related`, which no config check can intercept) — the two cells this
+    repository has already seen forge digest structure.
     """
-    heading = " › ".join(hit.heading_path)
-    path = _one_line(_relative_display(hit.path, hit.project_root))
-    repo = _one_line(hit.repo)
-    platform = _one_line(hit.platform)
-    locator = f"{repo} ({platform}) [{_kind_annotation(hit.kind)}] {path}"
-    if heading:
-        locator = f"{locator} §{heading}"
-    return locator
+    return _one_line(text).replace("\\", "\\\\").replace("|", "\\|")
 
 
-def _render_ranked_line(line: RankedLine) -> str:
-    hit = line.scored.hit
-    header = f"- **{_provenance(hit)}**"
-    if line.locator_only:
-        return header
-    body = _neutralize_body(hit.body)
-    if not body.strip():
-        return header
-    return f"{header}\n\n{body}"
+def _provenance(hit: Hit) -> tuple[str, str, str]:
+    """Return (repo, tier, path) for one hit's locator cells (FR-22).
+
+    `platform` names the tracker a project is configured against and answers
+    no question a locator is read for, so it no longer flows into rendering
+    at all — the caller escapes and collapses each returned value before it
+    reaches a table cell.
+    """
+    path = _relative_display(hit.path, hit.project_root)
+    return hit.repo, _validate_kind(hit.kind), path
 
 
-def _render_roadmap_line(line: RoadmapLine) -> str:
-    """Render one roadmap entry as a Markdown list item.
+_TABLE_COLUMNS = ("score", "tier", "repo", "path", "heading")
+
+
+def _render_table_row(scored: ScoredHit) -> str:
+    """Render one matched unit as a five-column Markdown table row (§5.6).
+
+    The `score` cell is always `scored.base_score` — BM25 times boost,
+    before decay — never `scored.score`, which is what `_greedy_diversify`
+    reordered the head by and what the NFR-9 debug channel's `final=`
+    reports. The two coincide only where decay left a row unchanged.
+    """
+    repo, tier, path = _provenance(scored.hit)
+    heading = " › ".join(scored.hit.heading_path)
+    cells = (f"{scored.base_score:.3g}", tier, repo, path, heading)
+    return "| " + " | ".join(_escape_cell(cell) for cell in cells) + " |"
+
+
+def _render_roadmap_entry(entry: RoadmapEntry) -> str:
+    """Render one roadmap entry as a Markdown list item, collapsed to one line.
 
     The `- ` prefix is what makes the line unforgeable: the entry text always
     opens with its own path label, and collapsing it leaves nothing able to
     open a line of its own, so no `#` or rule inside it can be read as digest
     structure (FR-35).
     """
-    if line.locator_only:
-        return f"- **{_one_line(line.entry.label)}** — {_one_line(line.entry.path.name)}"
-    return f"- {_one_line(line.entry.text)}"
+    return f"- {_one_line(entry.text)}"
+
+
+def _footer_project_labels(projects: list[ResolvedProject]) -> dict[int, str]:
+    """Return each project's footer label, keyed by `id()`, one label per project.
+
+    `repo` is a directory basename (FR-22), so two declared projects naming
+    the same leaf directory share one label unless something else separates
+    them — unlike a ranked table row, the footer carries no `path` cell to
+    tell them apart by (§5.6). Only a colliding `repo` earns the suffix, so
+    the common one-caller-plus-distinct-related-repos case renders exactly
+    as before. `ResolvedProject` carries a `list[str]` field and so is
+    unhashable, matching `_log_score_components`'s identity-keying pattern.
+    """
+    counts: dict[str, int] = {}
+    for project in projects:
+        counts[project.repo] = counts.get(project.repo, 0) + 1
+    labels: dict[int, str] = {}
+    for project in projects:
+        if counts[project.repo] > 1:
+            # The parent directory name is project-root-derived and never an
+            # absolute path — `_footer_locator`'s rule for this same footer.
+            parent_name = project.project_root.parent.name or project.project_root.name
+            labels[id(project)] = f"{project.repo} ({parent_name})"
+        else:
+            labels[id(project)] = project.repo
+    return labels
 
 
 def _render_footer(digest: DocsDigest) -> str:
-    lines = ["---", "", "### Resolved corpus", ""]
+    lines = [
+        "---",
+        "",
+        "### Matched units",
+        "",
+        f"- {digest.matched_unit_total} unit(s) matched",
+        "",
+        "### Resolved corpus",
+        "",
+    ]
+    labels = _footer_project_labels(digest.resolved_projects)
     for project in digest.resolved_projects:
         roots_desc = ", ".join(project.root_kinds) if project.root_kinds else "(none)"
         plural = "" if project.indexed_files == 1 else "s"
+        label = labels[id(project)]
         lines.append(
-            f"- {_one_line(project.repo)} ({_one_line(project.platform)}): {roots_desc} "
-            f"— {project.indexed_files} indexed file{plural}"
+            f"- {_one_line(label)}: {roots_desc} — {project.indexed_files} indexed file{plural}"
         )
 
     lines.append("")
@@ -1490,86 +1500,11 @@ def _render_footer(digest: DocsDigest) -> str:
         for skip in digest.skips:
             lines.append(f"- {_one_line(skip.locator)}: {_one_line(skip.reason)}")
 
-    if digest.roadmap_dropped:
-        lines.append("")
-        lines.append(f"### Roadmap entries dropped for budget: {digest.roadmap_dropped}")
-
-    if digest.ranked_dropped:
-        lines.append("")
-        lines.append(f"### {digest.ranked_dropped} further matches not shown (budget exhausted)")
-
-    if digest.ranked_omitted:
-        lines.append("")
-        lines.append(f"### {digest.ranked_omitted} further matches not ranked (candidate cap)")
-
     if digest.zero_related:
         lines.append("")
         lines.append("### --related resolved zero related projects")
 
     return "\n".join(lines)
-
-
-def _line_cost(rendered: str) -> int:
-    """Return what a rendered line costs its half's budget: the words it emits.
-
-    Charging the rendered form rather than a nominal constant is what makes
-    the budget a bound — a locator carries a full provenance header, so a
-    nominal charge lets an arbitrarily long tail of them through (NFR-6).
-    """
-    return len(rendered.split())
-
-
-def _budget_roadmap(entries: list[RoadmapEntry], budget: int) -> tuple[list[RoadmapLine], int, int]:
-    """Consume the roadmap share: full entries, then locators, then drops (§5.6).
-
-    Returns (lines, dropped_count, unspent_budget) — unspent_budget is
-    released to the ranked half, never the reverse.
-    """
-    remaining = budget
-    lines: list[RoadmapLine] = []
-    dropped = 0
-    for entry in entries:
-        full = RoadmapLine(entry=entry, locator_only=False)
-        cost = _line_cost(_render_roadmap_line(full))
-        if remaining >= cost:
-            lines.append(full)
-            remaining -= cost
-        elif remaining > 0:
-            locator = RoadmapLine(entry=entry, locator_only=True)
-            lines.append(locator)
-            remaining -= _line_cost(_render_roadmap_line(locator))
-        else:
-            dropped += 1
-    return lines, dropped, max(0, remaining)
-
-
-def _budget_ranked(hits: list[ScoredHit], budget: int) -> tuple[list[RankedLine], int]:
-    """Consume the ranked-half budget: full entries, then locators, then drops.
-
-    FR-21's guarantee is that no emitted body is truncated, and the three
-    tiers keep it. The tail drops rather than emitting a locator apiece,
-    because a match count in the hundreds would otherwise size the digest
-    instead of WORD_BUDGET doing it; the footer names how many.
-
-    Returns:
-        (lines, dropped_count).
-    """
-    remaining = budget
-    lines: list[RankedLine] = []
-    dropped = 0
-    for scored in hits:
-        full = RankedLine(scored=scored, locator_only=False)
-        cost = _line_cost(_render_ranked_line(full))
-        if remaining >= cost:
-            lines.append(full)
-            remaining -= cost
-        elif remaining > 0:
-            locator = RankedLine(scored=scored, locator_only=True)
-            lines.append(locator)
-            remaining -= _line_cost(_render_ranked_line(locator))
-        else:
-            dropped += 1
-    return lines, dropped
 
 
 def _assemble_digest(
@@ -1580,20 +1515,17 @@ def _assemble_digest(
     resolved_projects: list[ResolvedProject],
     skips: list[Skip],
     zero_related: bool,
-    ranked_omitted: int = 0,
 ) -> DocsDigest:
-    roadmap_budget = round(WORD_BUDGET * ROADMAP_SHARE)
-    roadmap_lines, roadmap_dropped, leftover = _budget_roadmap(roadmap_entries, roadmap_budget)
+    """Assemble a DocsDigest from its already-computed parts.
 
-    ranked_budget = round(WORD_BUDGET * PRIOR_DECISIONS_SHARE) + leftover
-    ranked_lines, ranked_dropped = _budget_ranked(ranked_hits, ranked_budget)
-
+    Every matched unit reaches the table (§5.6), so the matched-unit-total
+    contract is simply the emitted row count — there is no drop or omission
+    left that could make the two diverge.
+    """
     return DocsDigest(
-        roadmap_lines=roadmap_lines,
-        roadmap_dropped=roadmap_dropped,
-        ranked_lines=ranked_lines,
-        ranked_dropped=ranked_dropped,
-        ranked_omitted=ranked_omitted,
+        roadmap_entries=roadmap_entries,
+        ranked_hits=ranked_hits,
+        matched_unit_total=len(ranked_hits),
         doc_frequency=doc_frequency,
         resolved_projects=resolved_projects,
         skips=skips,
@@ -1610,16 +1542,20 @@ def _log_resolved_roots(roots: list[CorpusRoot]) -> None:
     """Log each resolved root with its origin at debug level (NFR-9).
 
     Skips are not repeated here: each is already logged at warning level
-    where it is discovered, and named in the footer.
+    where it is discovered, and named in the footer. `root.root`, `.repo`
+    and `.platform` are corpus- or config-derived — a sibling project under
+    `--related` controls all three — so each is collapsed through
+    `_one_line()` before reaching the logger; `--verbose` is the digest's
+    channel just as much as stdout is (§5.6).
     """
     for root in roots:
         logger.debug(
             "search docs: resolved root %s (repo=%s, corpus=%s, origin=%s, platform=%s)",
-            root.root,
-            root.repo,
+            _one_line(str(root.root)),
+            _one_line(root.repo),
             root.corpus,
             root.origin,
-            root.platform,
+            _one_line(root.platform),
         )
 
 
@@ -1680,7 +1616,6 @@ class DocsSearchHandler:
                     path,
                     corpus=root.corpus,
                     repo=root.repo,
-                    platform=root.platform,
                     project_root=root.project_root,
                 )
             )
@@ -1703,7 +1638,6 @@ class DocsSearchHandler:
             ],
             skips=all_skips,
             zero_related=related and resolver.zero_related(),
-            ranked_omitted=ranker.omitted(),
         )
 
         print(digest.render_markdown())

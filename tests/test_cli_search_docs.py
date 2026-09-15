@@ -203,6 +203,17 @@ class TestDocsSearchCliWiring:
         out = capsys.readouterr().out
         assert "## Roadmap" in out
 
+    def test_stdout_table_header_names_the_five_declared_columns(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        _write(tmp_path / "planning" / "notes.md", "sysroot text\n")
+        with patch("projctl.handlers.docs_search.get_repo_root", return_value=tmp_path):
+            rc = main(["search", "docs", "sysroot"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "| score | tier | repo | path | heading |" in out
+        assert "|---|---|---|---|---|" in out
+
     def test_config_file_in_cwd_subdirectory_of_repo_is_not_read(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
@@ -366,7 +377,7 @@ class TestDocsSearchCliWiring:
             rc = main(["--config", str(cfg), "search", "docs", "sysroot", "--related"])
 
         assert rc == 0
-        assert "related (undeclared)" in capsys.readouterr().out
+        assert "related: planning" in capsys.readouterr().out
 
     def test_one_absent_related_entry_does_not_abort_the_remaining_hops(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -385,7 +396,7 @@ class TestDocsSearchCliWiring:
         assert rc == 0
         out = capsys.readouterr().out
         assert "does-not-exist: declared path is absent on this machine" in out
-        assert "present (undeclared): planning" in out
+        assert "present: planning" in out
 
 
 # ---------------------------------------------------------------------------
@@ -425,21 +436,20 @@ class TestDocsSearchE2E:
         roadmap, _, rest = out.partition("## Prior decisions")
         prior_decisions, _, footer = rest.partition("\n---\n")
 
-        # One hit from each repository, each carrying its own platform tag —
-        # asserted against the ranked half alone, since the footer names both
-        # repositories whether or not a single section was indexed.
-        assert "[untyped] planning/a.md" in prior_decisions
-        assert "[untyped] planning/b.md" in prior_decisions
-        assert "caller (undeclared)" in prior_decisions
-        assert "related (github)" in prior_decisions
+        # One row from each repository, told apart by the `repo` cell alone —
+        # `platform` (the related project's "github") never reaches a
+        # rendered line at all (§5.6).
+        assert "| untyped | caller | planning/a.md |" in prior_decisions
+        assert "| untyped | related | planning/b.md |" in prior_decisions
+        assert "github" not in out
 
         assert "- planning/goal: The caller's roadmap." in roadmap
         assert len(roadmap.split()) <= 300
 
-        assert "caller (undeclared): planning — 2 indexed files" in footer
+        assert "caller: planning — 2 indexed files" in footer
         # The singular branch needs the line terminator: "1 indexed file" is a
         # substring of the plural form it is meant to be distinguished from.
-        assert "related (github): planning — 1 indexed file\n" in footer
+        assert "related: planning — 1 indexed file\n" in footer
         assert "absent: declared path is absent on this machine" in footer
 
     def test_a_skipped_related_path_warns_on_stderr_while_stdout_stays_the_digest(

@@ -28,33 +28,31 @@ from projctl.handlers.docs_search import (
     RANKED_CANDIDATE_CAP,
     ROADMAP_SCOPE_WORD_CAP,
     TEMPLATE_HEADING_SUPPRESSIONS,
-    WORD_BUDGET,
+    _TABLE_COLUMNS,
     Bm25Ranker,
     CorpusResolver,
     CorpusRoot,
     DocsDigest,
     DocsSearchHandler,
     Hit,
-    RankedLine,
     RoadmapEntry,
     RoadmapIndex,
-    RoadmapLine,
     ScoredHit,
     SectionExtractor,
     _assemble_digest,
     _assert_ranking_policy_shape,
     _assert_template_heading_shape,
-    _budget_ranked,
-    _budget_roadmap,
     _classify_kind,
     _compile_token_pattern,
     _dedupe_roots,
+    _escape_cell,
     _first_scope_line,
     _greedy_diversify,
-    _neutralize_body,
+    _provenance,
     _read_bold_fields,
-    _render_ranked_line,
-    _render_roadmap_line,
+    _relative_display,
+    _render_roadmap_entry,
+    _render_table_row,
     _split_sections,
     _walk_corpus_roots,
     tokenize,
@@ -175,8 +173,6 @@ class TestRankingPolicyShapeGuard:
             ("HEADING_BOOST", 1.0),
             ("FILE_DECAY", 1.0),
             ("DIRECTORY_DECAY", 0.0),
-            ("WORD_BUDGET", 0),
-            ("ROADMAP_SHARE", 0.5),
             ("CASE_EXACT_MIN_LEN", 9),
             ("ROADMAP_SCOPE_WORD_CAP", 0),
             ("RANKED_CANDIDATE_CAP", 0),
@@ -362,9 +358,7 @@ class TestReadBoldFields:
 
 
 def _extract(extractor: SectionExtractor, path: Path, tmp_path: Path, corpus: str = "planning"):
-    return extractor.extract(
-        path, corpus=corpus, repo="myrepo", platform="gitlab", project_root=tmp_path
-    )
+    return extractor.extract(path, corpus=corpus, repo="myrepo", project_root=tmp_path)
 
 
 class TestSectionExtractor:
@@ -380,7 +374,6 @@ class TestSectionExtractor:
         goals_hit = next(h for h in hits if h.heading_path == ["Title", "Goals"])
         assert goals_hit.cost_words == 4
         assert goals_hit.repo == "myrepo"
-        assert goals_hit.platform == "gitlab"
         assert goals_hit.project_root == tmp_path
 
     def test_field_map_populated_only_for_failure_and_roadmap_kind(self, tmp_path: Path) -> None:
@@ -445,7 +438,6 @@ def _hit(
     kind="untyped",
     fields=None,
     repo="repo",
-    platform="gitlab",
     project_root=Path("."),
 ) -> Hit:
     return Hit(
@@ -456,7 +448,6 @@ def _hit(
         cost_words=len(body.split()),
         fields=fields or {},
         repo=repo,
-        platform=platform,
         project_root=project_root,
     )
 
@@ -644,7 +635,40 @@ class TestOpenFailurePin:
         ranked = ranker.rank()
 
         assert ranked[0].hit.path == Path("ledger/observed-failures.md")
-        assert ranker.omitted() == 100
+        # Every matched unit still reaches the caller — the bound now governs
+        # only what passes through the quadratic diversify pass, not what is
+        # emitted (§5.6).
+        assert len(ranked) == len(corpus) + 1
+
+    def test_a_pin_set_exceeding_the_bound_diversifies_only_the_bound(self) -> None:
+        # All pins share one file, so a diversified pick discounts every
+        # later same-file pick by FILE_DECAY. Only the diversified share of
+        # the pin set should carry that discount — the surplus pins beyond
+        # the bound never reach `_greedy_diversify` and so keep
+        # score == base_score.
+        total_pins = RANKED_CANDIDATE_CAP + 50
+        pins = [
+            _hit(
+                "ledger/observed-failures.md",
+                "sysroot " * (total_pins - i),
+                heading_path=[f"Failure {i}"],
+                kind="failure",
+                fields={"Status": "open"},
+            )
+            for i in range(total_pins)
+        ]
+        unpinned = _hit("other/notes.md", "sysroot", heading_path=["Other"])
+
+        ranked = Bm25Ranker(pins + [unpinned], "sysroot").rank()
+
+        assert len(ranked) == total_pins + 1
+        assert [sh.hit.kind for sh in ranked[:total_pins]] == ["failure"] * total_pins
+        assert ranked[-1].hit.path == unpinned.path
+
+        diversified_head = ranked[:RANKED_CANDIDATE_CAP]
+        surplus = ranked[RANKED_CANDIDATE_CAP:total_pins]
+        assert all(sh.score < sh.base_score for sh in diversified_head[1:])
+        assert all(sh.score == sh.base_score for sh in surplus)
 
     @pytest.mark.parametrize("status", ["covered", "waived", "out-of-scope", "unknown"])
     def test_non_open_status_values_do_not_pin(self, status: str) -> None:
@@ -658,6 +682,29 @@ class TestOpenFailurePin:
         high = _hit("b.md", "sysroot " * 20, heading_path=["Sysroot"])
         ranker = Bm25Ranker([low, high], "sysroot")
         assert ranker.rank()[0].hit.path == Path("b.md")
+
+
+class TestRankOrdering:
+    def test_row_order_is_pinned_then_diversified_head_then_descending_tail(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A cap of 3 with one pin leaves room for exactly two diversified
+        # unpinned rows, so the remaining two land in the plain-sorted tail —
+        # small enough to name every row by hand.
+        monkeypatch.setattr(docs_search, "RANKED_CANDIDATE_CAP", 3)
+        pinned = _hit(
+            "ledger/observed-failures.md", "sysroot", kind="failure", fields={"Status": "open"}
+        )
+        head = [_hit(f"h{i}/f.md", "sysroot " * (5 - i), heading_path=[f"H{i}"]) for i in range(2)]
+        tail = [_hit(f"t{i}/f.md", "sysroot " * (2 - i), heading_path=[f"T{i}"]) for i in range(2)]
+
+        ranked = Bm25Ranker([pinned, *head, *tail], "sysroot").rank()
+
+        assert ranked[0].hit.path == pinned.path
+        assert {sh.hit.path for sh in ranked[1:3]} == {h.path for h in head}
+        assert {sh.hit.path for sh in ranked[3:]} == {t.path for t in tail}
+        tail_scores = [sh.base_score for sh in ranked[3:]]
+        assert tail_scores == sorted(tail_scores, reverse=True)
 
 
 class TestBm25RankerRaisesOnUnknownKind:
@@ -729,13 +776,16 @@ class TestRankingAtCorpusScale:
         ranked = ranker.rank()
         elapsed = time.monotonic() - start
 
-        assert len(ranked) == RANKED_CANDIDATE_CAP
-        assert ranker.omitted() == 4000 - RANKED_CANDIDATE_CAP
+        # Every matched unit reaches the caller (§5.6) — the bound caps only
+        # what passes through the quadratic diversify pass, not emission.
+        assert len(ranked) == 4000
         # Uncapped, this input measured 25 s; the ceiling is loose enough that
         # only a return to corpus-sized diversification can trip it.
         assert elapsed < 5.0
 
-    def test_the_cap_keeps_the_highest_scoring_units_and_drops_the_rest(self) -> None:
+    def test_the_cap_diversifies_the_highest_scoring_units_and_appends_the_rest_by_score(
+        self,
+    ) -> None:
         # One file per directory, so no decay reorders the greedy pass and the
         # strongest units are selected in relevance order.
         strong = [_hit(f"s{i}/f.md", "sysroot sysroot sysroot filler") for i in range(20)]
@@ -743,101 +793,10 @@ class TestRankingAtCorpusScale:
 
         ranked = Bm25Ranker(strong + weak, "sysroot").rank()
 
+        assert len(ranked) == 4020
         assert [sh.hit.path for sh in ranked[:20]] == [hit.path for hit in strong]
-
-
-# ---------------------------------------------------------------------------
-# Budget assembly
-# ---------------------------------------------------------------------------
-
-
-def _entry(name: str, words: int) -> RoadmapEntry:
-    return RoadmapEntry(path=Path(f"{name}/overview.md"), label=name, text=" ".join([name] * words))
-
-
-class TestBudgetRanked:
-    def test_unit_over_remaining_budget_emits_locator_with_no_body(self) -> None:
-        scored = ScoredHit(hit=_hit("a.md", "one two three four five"), score=1.0)
-        lines, _dropped = _budget_ranked([scored], budget=2)
-        assert lines[0].locator_only is True
-
-    def test_6054_word_section_never_emits_a_body_at_the_full_word_budget(self) -> None:
-        big = _hit("a.md", "word " * 6054)
-        scored = ScoredHit(hit=big, score=1.0)
-        lines, _dropped = _budget_ranked([scored], budget=WORD_BUDGET)
-        assert lines[0].locator_only is True
-
-    def test_ranked_half_degrades_to_locators_then_drops_the_tail(self) -> None:
-        scored_hits = [ScoredHit(hit=_hit(f"{i}.md", "word " * 50), score=1.0) for i in range(5)]
-        lines, dropped = _budget_ranked(scored_hits, budget=60)
-        assert [line.locator_only for line in lines] == [False, True]
-        assert dropped == 3
-
-    def test_the_ranked_half_emits_no_more_words_than_its_budget_plus_one_line(self) -> None:
-        scored_hits = [ScoredHit(hit=_hit(f"{i}.md", "word " * 60), score=1.0) for i in range(400)]
-        lines, dropped = _budget_ranked(scored_hits, budget=WORD_BUDGET)
-        emitted = sum(len(_render_ranked_line(line).split()) for line in lines)
-        widest = max(len(_render_ranked_line(line).split()) for line in lines)
-        assert emitted <= WORD_BUDGET + widest
-        assert len(lines) + dropped == 400
-
-
-class TestBudgetRoadmap:
-    def test_entries_past_the_share_degrade_to_locator_then_drop(self) -> None:
-        # Each entry renders "- <name> <name>" (3 words) in full and
-        # "- **<name>** — overview.md" (4 words) as a locator, so a budget of
-        # 8 buys two full entries, then one locator, then drops the rest.
-        entries = [_entry(str(i), 2) for i in range(5)]
-        lines, dropped, _leftover = _budget_roadmap(entries, budget=8)
-        assert [line.locator_only for line in lines] == [False, False, True]
-        assert dropped == 2
-
-    def test_roadmap_set_smaller_than_its_share_releases_the_remainder(self) -> None:
-        entries = [_entry("a", 5)]
-        _lines, dropped, leftover = _budget_roadmap(entries, budget=300)
-        assert dropped == 0
-        assert leftover == 300 - len("- a a a a a".split())
-
-    def test_roadmap_set_that_fully_consumes_its_share_releases_nothing(self) -> None:
-        entries = [_entry(str(i), 100) for i in range(30)]
-        _lines, _dropped, leftover = _budget_roadmap(entries, budget=300)
-        assert leftover == 0
-
-
-def test_roadmap_leftover_extends_the_ranked_half_budget() -> None:
-    roadmap_entries = [_entry("a", 5)]
-    big_hit = _hit("b.md", "word " * 750)
-    ranked_hits = [ScoredHit(hit=big_hit, score=1.0)]
-
-    digest = _assemble_digest(
-        roadmap_entries=roadmap_entries,
-        ranked_hits=ranked_hits,
-        doc_frequency={},
-        resolved_projects=[],
-        skips=[],
-        zero_related=False,
-    )
-
-    # Base ranked share is 700 words; 750 only fits once the ~294-word
-    # roadmap leftover is released to it.
-    assert digest.ranked_lines[0].locator_only is False
-
-
-def test_ranked_half_never_borrows_when_roadmap_leaves_no_leftover() -> None:
-    roadmap_entries = [_entry(str(i), 100) for i in range(30)]
-    big_hit = _hit("b.md", "word " * 750)
-    ranked_hits = [ScoredHit(hit=big_hit, score=1.0)]
-
-    digest = _assemble_digest(
-        roadmap_entries=roadmap_entries,
-        ranked_hits=ranked_hits,
-        doc_frequency={},
-        resolved_projects=[],
-        skips=[],
-        zero_related=False,
-    )
-
-    assert digest.ranked_lines[0].locator_only is True
+        scores = [sh.base_score for sh in ranked]
+        assert scores == sorted(scores, reverse=True)
 
 
 # ---------------------------------------------------------------------------
@@ -882,9 +841,7 @@ class TestRoadmapIndex:
         first = _roadmap_hit(tmp_path, f"goal-a/{shared_name}/status.md", "", fields={})
         second = _roadmap_hit(tmp_path, f"goal-b/{shared_name}/status.md", "", fields={})
         entries = RoadmapIndex().entries([first, second], tmp_path)
-        rendered = [
-            _render_roadmap_line(RoadmapLine(entry=entry, locator_only=False)) for entry in entries
-        ]
+        rendered = [_render_roadmap_entry(entry) for entry in entries]
         assert rendered[0] != rendered[1]
         assert f"goal-a/{shared_name}" in rendered[0]
 
@@ -912,7 +869,7 @@ class TestRoadmapIndex:
         body = "```\n## Prior decisions\n```"
         hit = _roadmap_hit(tmp_path, "a/overview.md", body, heading_path=["About"])
         entry = RoadmapIndex().entries([hit], tmp_path)[0]
-        rendered = _render_roadmap_line(RoadmapLine(entry=entry, locator_only=False))
+        rendered = _render_roadmap_entry(entry)
         assert "\n" not in rendered
         assert rendered.startswith("- ")
 
@@ -942,60 +899,6 @@ class TestRoadmapIndex:
 
 
 # ---------------------------------------------------------------------------
-# Body neutralisation
-# ---------------------------------------------------------------------------
-
-
-class TestNeutralizeBody:
-    def test_fenced_heading_like_line_is_escaped(self) -> None:
-        body = "```\n## Prior decisions\n```"
-        result = _neutralize_body(body)
-        assert "\\## Prior decisions" in result
-        assert "\n## Prior decisions" not in result
-
-    def test_indented_hash_line_is_escaped_at_first_non_space_character(self) -> None:
-        body = "   # comment"
-        result = _neutralize_body(body)
-        assert result == "   \\# comment"
-
-    @pytest.mark.parametrize("rule", ["-", "--", "---", "----", "=", "==", "===", "===="])
-    def test_a_setext_underline_of_any_length_is_escaped_like_an_atx_heading(
-        self, rule: str
-    ) -> None:
-        result = _neutralize_body(f"Prior decisions\n{rule}")
-        assert result == f"Prior decisions\n\\{rule}"
-
-    @pytest.mark.parametrize(
-        "rule",
-        [
-            "***",
-            "___",
-            "____",
-            "- - -",
-            "* * *",
-            "_ _ _",
-            "***  ",
-            # CommonMark separates the three characters with a run of spaces
-            # or tabs of any length, not with the single space a fixed-spacing
-            # pattern would admit.
-            "-  -  -",
-            "-     -      -      -",
-            "-\t-\t-",
-            "**  * ** * ** * **",
-        ],
-    )
-    def test_every_thematic_break_spelling_is_escaped(self, rule: str) -> None:
-        # Each renders as the <hr/> that is the footer's own boundary.
-        assert _neutralize_body(rule) == f"\\{rule}"
-
-    def test_a_dashed_list_item_is_left_alone(self) -> None:
-        assert _neutralize_body("- a list item") == "- a list item"
-
-    def test_a_bolded_run_on_its_own_line_is_left_alone(self) -> None:
-        assert _neutralize_body("***emphasised***") == "***emphasised***"
-
-
-# ---------------------------------------------------------------------------
 # CorpusResolver and file walking — integration under tmp_path
 # ---------------------------------------------------------------------------
 
@@ -1011,7 +914,7 @@ class TestCorpusResolverBareInvocation:
         resolver = CorpusResolver(tmp_path)
         roots = resolver.roots(related=False)
         assert any(r.corpus == "planning" for r in roots)
-        assert resolver.resolved_projects()[0].platform == "undeclared"
+        assert roots[0].platform == "undeclared"
 
     def test_missing_default_docs_path_is_silent(self, tmp_path: Path) -> None:
         _write(tmp_path / "planning" / "notes.md")
@@ -1260,8 +1163,8 @@ class TestCorpusResolverRelatedHop:
 
         resolver = CorpusResolver(caller)
         with pytest.warns(DeprecationWarning, match="deprecated format"):
-            resolver.roots(related=True)
-        platforms = {p.repo: p.platform for p in resolver.resolved_projects()}
+            roots = resolver.roots(related=True)
+        platforms = {r.repo: r.platform for r in roots}
         assert platforms["no-platform"] == "undeclared"
         assert platforms["legacy"] == "undeclared"
         assert platforms["no-config"] == "undeclared"
@@ -1406,6 +1309,7 @@ _CONTRACTED_DIGEST_STRUCTURE = [
     "## Roadmap",
     "## Prior decisions",
     "---",
+    "### Matched units",
     "### Resolved corpus",
     "### Query token document frequency",
 ]
@@ -1417,6 +1321,26 @@ def _structural_lines(rendered: str) -> list[str]:
         for line in rendered.splitlines()
         if line.startswith("## ") or line.startswith("### ") or line == "---"
     ]
+
+
+def _count_table_rows(rendered: str) -> int:
+    """Count data rows actually printed in the locator table.
+
+    Every row is one line (`_escape_cell` collapses embedded newlines), and
+    the table's data rows run from the alignment row to the first blank
+    line `render_markdown` appends before the footer — so counting lines in
+    that span counts exactly what a consumer pasting the table would see,
+    unlike `matched_unit_total` or `len(ranked_hits)`, both of which a
+    truncated render loop leaves unchanged.
+    """
+    lines = rendered.splitlines()
+    start = lines.index("|" + "|".join(["---"] * len(_TABLE_COLUMNS)) + "|") + 1
+    count = 0
+    for line in lines[start:]:
+        if line == "":
+            break
+        count += 1
+    return count
 
 
 class TestDocsSearchHandlerIntegration:
@@ -1433,11 +1357,9 @@ class TestDocsSearchHandlerIntegration:
         digest = handler.search("sysroot", related=False)
         capsys.readouterr()
 
-        kinds = {line.scored.hit.kind for line in digest.ranked_lines}
+        kinds = {line.hit.kind for line in digest.ranked_hits}
         assert "alternative" in kinds
-        hit = next(
-            line.scored.hit for line in digest.ranked_lines if line.scored.hit.kind == "alternative"
-        )
+        hit = next(line.hit for line in digest.ranked_hits if line.hit.kind == "alternative")
         assert hit.heading_path == ["Design", "7. Trade-offs and Alternatives"]
 
     def test_flat_orphan_tree_yields_typed_failure_hits_with_no_issue_number(
@@ -1453,7 +1375,7 @@ class TestDocsSearchHandlerIntegration:
         digest = handler.search("sysroot", related=False)
         capsys.readouterr()
 
-        kinds = {line.scored.hit.kind for line in digest.ranked_lines}
+        kinds = {line.hit.kind for line in digest.ranked_hits}
         assert "failure" in kinds
 
     def test_untyped_fallback_hits_render_with_untyped_annotation_and_unchanged_score(
@@ -1465,8 +1387,8 @@ class TestDocsSearchHandlerIntegration:
         digest = handler.search("sysroot", related=False)
         out = capsys.readouterr().out
 
-        assert "[untyped]" in out
-        assert any(line.scored.hit.kind == "untyped" for line in digest.ranked_lines)
+        assert "| untyped |" in out
+        assert any(line.hit.kind == "untyped" for line in digest.ranked_hits)
 
     def test_repository_root_readme_is_never_indexed(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -1478,7 +1400,7 @@ class TestDocsSearchHandlerIntegration:
         digest = handler.search("sysroot", related=False)
         capsys.readouterr()
 
-        paths = {line.scored.hit.path for line in digest.ranked_lines}
+        paths = {line.hit.path for line in digest.ranked_hits}
         assert not any(p.name == "README.md" for p in paths)
 
     def test_tracker_less_tree_yields_one_roadmap_entry_per_file(
@@ -1498,7 +1420,7 @@ class TestDocsSearchHandlerIntegration:
         digest = handler.search("sysroot", related=False)
         capsys.readouterr()
 
-        assert len(digest.roadmap_lines) == 4
+        assert len(digest.roadmap_entries) == 4
 
     def test_query_matching_nothing_yields_empty_prior_decisions_but_roadmap_still_renders(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -1509,7 +1431,7 @@ class TestDocsSearchHandlerIntegration:
         digest = handler.search("zzzznomatch", related=False)
         out = capsys.readouterr().out
 
-        assert digest.ranked_lines == []
+        assert digest.ranked_hits == []
         assert "## Roadmap" in out
         assert "## Prior decisions" in out
 
@@ -1590,7 +1512,7 @@ class TestDocsSearchHandlerIntegration:
         digest = handler.search("sysroot", related=False)
         out = capsys.readouterr().out
 
-        assert any(line.scored.hit.path.name == "good.md" for line in digest.ranked_lines)
+        assert any(line.hit.path.name == "good.md" for line in digest.ranked_hits)
         assert "### Skipped" in out
         assert "bad.md" in out
 
@@ -1631,8 +1553,8 @@ class TestDocsSearchHandlerIntegration:
         digest = DocsSearchHandler(repo_root=tmp_path).search("sysroot", related=False)
         out = capsys.readouterr().out
 
-        assert "constraint" in {line.scored.hit.kind for line in digest.ranked_lines}
-        assert "[constraint]" in out
+        assert "constraint" in {line.hit.kind for line in digest.ranked_hits}
+        assert "| constraint |" in out
 
     def test_one_failure_hit_is_produced_per_dated_record(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -1648,11 +1570,11 @@ class TestDocsSearchHandlerIntegration:
         digest = DocsSearchHandler(repo_root=tmp_path).search("sysroot", related=False)
         capsys.readouterr()
 
-        failures = [line for line in digest.ranked_lines if line.scored.hit.kind == "failure"]
-        headings = {line.scored.hit.heading_path[-1] for line in failures}
+        failures = [line for line in digest.ranked_hits if line.hit.kind == "failure"]
+        headings = {line.hit.heading_path[-1] for line in failures}
         assert len(headings) == 3
         # The one open record outranks both covered ones whatever they scored.
-        assert digest.ranked_lines[0].scored.hit.fields["Status"] == "open"
+        assert digest.ranked_hits[0].hit.fields["Status"] == "open"
 
     def test_a_related_projects_roadmap_file_still_ranks_in_prior_decisions(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -1666,9 +1588,31 @@ class TestDocsSearchHandlerIntegration:
         digest = DocsSearchHandler(repo_root=caller).search("sysroot", related=True)
         capsys.readouterr()
 
-        assert digest.roadmap_lines == []
-        ranked_repos = {line.scored.hit.repo for line in digest.ranked_lines}
+        assert digest.roadmap_entries == []
+        ranked_repos = {line.hit.repo for line in digest.ranked_hits}
         assert "related" in ranked_repos
+
+    def test_no_path_cell_is_absolute_for_the_caller_or_a_related_sibling(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        # Same-named files in two repositories: nothing here disambiguates
+        # them but the `repo` cell, since the `path` cell is project-relative
+        # in both (§5.6).
+        caller = tmp_path / "caller"
+        related = tmp_path / "related"
+        _write(caller / "planning" / "notes.md", "sysroot in the caller\n")
+        (caller / "projctl.yaml").write_text(f"search:\n  related:\n    - {related}\n")
+        _write(related / "planning" / "notes.md", "sysroot in the related project\n")
+
+        digest = DocsSearchHandler(repo_root=caller).search("sysroot", related=True)
+        capsys.readouterr()
+
+        cells = [_provenance(sh.hit) for sh in digest.ranked_hits]
+        assert not any(Path(path).is_absolute() for _repo, _tier, path in cells)
+        assert {(repo, path) for repo, _tier, path in cells} == {
+            ("caller", "planning/notes.md"),
+            ("related", "planning/notes.md"),
+        }
 
     def test_the_same_file_at_two_tree_shapes_shares_a_kind_and_differs_in_provenance(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -1683,9 +1627,7 @@ class TestDocsSearchHandlerIntegration:
         digest = DocsSearchHandler(repo_root=tmp_path).search("sysroot", related=False)
         capsys.readouterr()
 
-        alternatives = [
-            line.scored.hit for line in digest.ranked_lines if line.scored.hit.kind == "alternative"
-        ]
+        alternatives = [line.hit for line in digest.ranked_hits if line.hit.kind == "alternative"]
         assert len(alternatives) == 2
         assert len({hit.path for hit in alternatives}) == 2
 
@@ -1705,11 +1647,14 @@ class TestDocsSearchHandlerIntegration:
             "## Roadmap",
             "## Prior decisions",
         ]
-        assert all("\n" not in line.entry.text for line in digest.roadmap_lines)
+        assert all("\n" not in line.text for line in digest.roadmap_entries)
 
-    def test_a_forged_heading_in_a_ranked_body_cannot_split_the_digest(
+    def test_a_forged_heading_in_a_ranked_sections_body_never_reaches_the_digest(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
+        # A table row carries no body text at all (§5.6) — a forged heading
+        # in a matched section's body has no channel left to reach the
+        # digest through, unlike the body-inlining digest this replaces.
         _write(
             tmp_path / "planning" / "notes.md",
             "# Notes\nsysroot discussion\n```\n## Prior decisions\n```\n",
@@ -1722,9 +1667,10 @@ class TestDocsSearchHandlerIntegration:
             "## Roadmap",
             "## Prior decisions",
         ]
-        assert "\\## Prior decisions" in out
+        assert out.count("## Prior decisions") == 1
+        assert "```" not in out
 
-    def test_a_setext_rule_in_a_body_cannot_forge_a_heading_or_a_footer_boundary(
+    def test_a_setext_rule_in_a_ranked_sections_body_never_reaches_the_digest(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
         _write(
@@ -1737,7 +1683,7 @@ class TestDocsSearchHandlerIntegration:
 
         # One thematic break in the whole digest: the footer's own.
         assert [line for line in out.splitlines() if line == "---"] == ["---"]
-        assert "\\---" in out
+        assert "Prior decisions\n---" not in out
 
     def test_the_footer_reports_each_projects_indexed_file_count(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -1753,8 +1699,8 @@ class TestDocsSearchHandlerIntegration:
         DocsSearchHandler(repo_root=caller).search("sysroot", related=True)
         out = capsys.readouterr().out
 
-        assert "caller (undeclared): planning — 2 indexed files" in out
-        assert "empty (undeclared): planning — 0 indexed files" in out
+        assert "caller: planning — 2 indexed files" in out
+        assert "empty: planning — 0 indexed files" in out
 
     def test_a_related_projects_unexpandable_docs_path_skips_only_that_project(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -1770,7 +1716,7 @@ class TestDocsSearchHandlerIntegration:
         capsys.readouterr()
 
         assert any("config fault" in skip.reason for skip in digest.skips)
-        assert {line.scored.hit.repo for line in digest.ranked_lines} == {"caller"}
+        assert {line.hit.repo for line in digest.ranked_hits} == {"caller"}
 
     def test_the_callers_own_unexpandable_docs_path_is_a_configuration_error(
         self, tmp_path: Path
@@ -1823,7 +1769,7 @@ class TestDocsSearchHandlerIntegration:
         capsys.readouterr()
 
         assert any("resolves to the project root" in skip.reason for skip in digest.skips)
-        assert not any(".git" in str(line.scored.hit.path) for line in digest.ranked_lines)
+        assert not any(".git" in str(line.hit.path) for line in digest.ranked_hits)
 
     def test_a_file_that_cannot_be_opened_is_skipped_and_the_rest_still_indexed(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -1842,9 +1788,9 @@ class TestDocsSearchHandlerIntegration:
         capsys.readouterr()
 
         assert any("unreadable" in skip.reason for skip in digest.skips)
-        assert any(line.scored.hit.path.name == "good.md" for line in digest.ranked_lines)
+        assert any(line.hit.path.name == "good.md" for line in digest.ranked_hits)
 
-    def test_score_components_are_logged_for_units_the_digest_never_shows(
+    def test_score_components_are_logged_for_every_matched_unit_including_the_tail(
         self, tmp_path: Path, capsys: pytest.CaptureFixture, caplog: pytest.LogCaptureFixture
     ) -> None:
         for i in range(RANKED_CANDIDATE_CAP + 5):
@@ -1856,7 +1802,10 @@ class TestDocsSearchHandlerIntegration:
 
         score_lines = [ln for ln in caplog.text.splitlines() if "search docs: score" in ln]
         assert len(score_lines) == RANKED_CANDIDATE_CAP + 5
-        assert any("not selected" in line for line in score_lines)
+        # Every matched unit now reaches the table (§5.6), so the debug
+        # channel never logs "not selected" the way the retired candidate-cap
+        # drop once made it — beyond the bound is still emitted, undiversified.
+        assert not any("not selected" in line for line in score_lines)
         for marker in ("bm25=", "boost=", "pin=", "decay="):
             assert any(marker in line for line in score_lines)
 
@@ -1881,7 +1830,7 @@ class TestDocsSearchHandlerIntegration:
         assert any("c/notes.md" in ln and "boost=applied" in ln for ln in score_lines)
         assert any("d/notes.md" in ln and "boost=floor-only" in ln for ln in score_lines)
 
-    def test_the_footer_names_cap_omitted_units_separately_from_budget_drops(
+    def test_a_matched_set_beyond_the_bound_still_reports_a_whole_matched_unit_total(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
         for i in range(RANKED_CANDIDATE_CAP + 50):
@@ -1890,9 +1839,13 @@ class TestDocsSearchHandlerIntegration:
         digest = DocsSearchHandler(repo_root=tmp_path).search("sysroot", related=False)
         out = capsys.readouterr().out
 
-        assert digest.ranked_omitted == 50
-        assert "### 50 further matches not ranked (candidate cap)" in out
-        assert f"### {digest.ranked_dropped} further matches not shown (budget exhausted)" in out
+        assert digest.matched_unit_total == RANKED_CANDIDATE_CAP + 50
+        assert len(digest.ranked_hits) == digest.matched_unit_total
+        assert f"- {digest.matched_unit_total} unit(s) matched" in out
+        # No budget-dropped, roadmap-dropped, or cap-omitted block survives
+        # past the bound (§6) — the footer carries exactly the documented
+        # headings, whatever the matched-unit count.
+        assert _structural_lines(out) == _CONTRACTED_DIGEST_STRUCTURE
 
     def test_a_project_whose_every_file_is_unreadable_reports_zero_indexed_files(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -1913,7 +1866,7 @@ class TestDocsSearchHandlerIntegration:
                 (planning / name).chmod(0o644)
         out = capsys.readouterr().out
 
-        assert f"{tmp_path.name} (undeclared): planning — 0 indexed files" in out
+        assert f"{tmp_path.name}: planning — 0 indexed files" in out
 
     def test_a_partially_indexed_file_still_counts_as_indexed(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -1924,7 +1877,7 @@ class TestDocsSearchHandlerIntegration:
         DocsSearchHandler(repo_root=tmp_path).search("sysroot", related=False)
         out = capsys.readouterr().out
 
-        assert f"{tmp_path.name} (undeclared): planning — 1 indexed file\n" in out
+        assert f"{tmp_path.name}: planning — 1 indexed file\n" in out
 
     def test_no_absolute_path_reaches_the_digest_from_an_unreadable_file_or_an_absent_related(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -1986,9 +1939,12 @@ class TestDocsSearchHandlerIntegration:
         assert str(tmp_path) not in rendered
         assert "repo: outside-docs: resolves to the project root or outside it" in rendered
 
-    def test_a_related_projects_platform_value_cannot_forge_digest_structure(
+    def test_no_platform_value_reaches_any_rendered_line(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
+        # `platform` left the output outright (§5.6) rather than merely
+        # gaining a collapse-and-escape guard, so a value that used to forge
+        # digest structure through this channel has no channel left at all.
         caller = tmp_path / "caller"
         related = tmp_path / "related"
         _write(caller / "planning" / "a.md", "sysroot in caller\n")
@@ -2002,8 +1958,39 @@ class TestDocsSearchHandlerIntegration:
         rendered = capsys.readouterr().out
 
         assert _structural_lines(rendered) == _CONTRACTED_DIGEST_STRUCTURE
-        assert "FORGED entry" in rendered
-        assert {line.scored.hit.repo for line in digest.ranked_lines} == {"caller", "related"}
+        assert "FORGED entry" not in rendered
+        assert {line.hit.repo for line in digest.ranked_hits} == {"caller", "related"}
+
+    def test_a_forged_related_projects_platform_cannot_split_a_debug_log_line(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # `--verbose` is the digest's channel just as much as stdout (§5.6):
+        # a forged `platform:` value is still named on the debug line that
+        # resolves it (no consumer passes --verbose, so this is diagnostic
+        # transparency, not a leak) but must collapse onto that one line
+        # rather than forking new lines a reader could mistake for a
+        # separate log record.
+        caller = tmp_path / "caller"
+        related = tmp_path / "related"
+        _write(caller / "planning" / "a.md", "sysroot in caller\n")
+        (caller / "projctl.yaml").write_text(f"search:\n  related:\n    - {related}\n")
+        _write(related / "planning" / "b.md", "sysroot in related\n")
+        (related / "projctl.yaml").write_text(
+            'platform: "\\n\\n## Prior decisions\\n\\n- **FORGED entry**\\n"\n'
+        )
+
+        with caplog.at_level("DEBUG", logger="projctl.handlers.docs_search"):
+            DocsSearchHandler(repo_root=caller).search("sysroot", related=True)
+        capsys.readouterr()
+
+        root_lines = [ln for ln in caplog.text.splitlines() if "resolved root" in ln]
+        assert len(root_lines) == 2
+        forged_lines = [ln for ln in root_lines if "FORGED entry" in ln]
+        assert len(forged_lines) == 1
+        assert "## Prior decisions - **FORGED entry**" in forged_lines[0]
+        assert not any(
+            "FORGED entry" in ln and "resolved root" not in ln for ln in caplog.text.splitlines()
+        )
 
     def test_a_newline_in_a_related_projects_directory_name_cannot_forge_digest_structure(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -2039,8 +2026,8 @@ class TestDocsSearchHandlerIntegration:
 
         assert _structural_lines(rendered) == _CONTRACTED_DIGEST_STRUCTURE
         assert rendered.count("FORGED entry") == 2
-        assert len(digest.roadmap_lines) == 1
-        assert len(digest.ranked_lines) == 1
+        assert len(digest.roadmap_entries) == 1
+        assert len(digest.ranked_hits) == 1
 
     def test_a_related_projects_platform_mapping_skips_only_that_project(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -2056,9 +2043,9 @@ class TestDocsSearchHandlerIntegration:
         capsys.readouterr()
 
         assert any("config fault" in skip.reason for skip in digest.skips)
-        assert {line.scored.hit.repo for line in digest.ranked_lines} == {"caller"}
+        assert {line.hit.repo for line in digest.ranked_hits} == {"caller"}
 
-    def test_two_related_projects_sharing_a_directory_name_keep_separate_footer_rows(
+    def test_two_related_projects_sharing_a_directory_name_still_resolve_as_two_projects(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
         caller = tmp_path / "caller"
@@ -2070,18 +2057,21 @@ class TestDocsSearchHandlerIntegration:
         )
         _write(first / "planning" / "one.md", "sysroot in the first\n")
         _write(second / "planning" / "two.md", "sysroot in the second\n")
-        (second / "projctl.yaml").write_text("platform: github\n")
 
         digest = DocsSearchHandler(repo_root=caller).search("sysroot", related=True)
         out = capsys.readouterr().out
 
-        assert [(p.repo, p.platform) for p in digest.resolved_projects] == [
-            ("caller", "undeclared"),
-            ("shared", "undeclared"),
-            ("shared", "github"),
-        ]
-        assert "shared (undeclared): planning — 1 indexed file\n" in out
-        assert "shared (github): planning — 1 indexed file\n" in out
+        assert [p.repo for p in digest.resolved_projects] == ["caller", "shared", "shared"]
+        # The footer's resolved-corpus row carries no path field to
+        # disambiguate by — unlike the ranked table's `repo` cell, told apart
+        # by its own `path` cell (§5.6) — so two same-named related projects
+        # gain a parent-directory discriminator instead of colliding into
+        # one indistinguishable line.
+        shared_lines = [line for line in out.splitlines() if line.startswith("- shared")]
+        assert len(shared_lines) == 2
+        assert len(set(shared_lines)) == 2
+        assert "- shared (a): planning — 1 indexed file" in shared_lines
+        assert "- shared (b): planning — 1 indexed file" in shared_lines
 
     def test_a_related_entry_naming_no_resolvable_home_is_contained_and_named(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -2098,7 +2088,7 @@ class TestDocsSearchHandlerIntegration:
         assert "### Skipped" in rendered
         assert "~nosuchuser/x" in rendered
         assert str(tmp_path) not in rendered
-        assert any(line.scored.hit.path.name == "a.md" for line in digest.ranked_lines)
+        assert any(line.hit.path.name == "a.md" for line in digest.ranked_hits)
         assert out.startswith("## Roadmap")
 
         # No config file was opened, so the reason must name the expansion —
@@ -2125,7 +2115,7 @@ class TestDocsSearchHandlerIntegration:
 
         assert any("unreadable directory" in skip.reason for skip in digest.skips)
         assert "planning/locked: unreadable directory: [Errno" in out
-        assert [line.scored.hit.path.name for line in digest.ranked_lines] == ["good.md"]
+        assert [line.hit.path.name for line in digest.ranked_hits] == ["good.md"]
 
     def test_only_units_matching_a_query_token_reach_the_score_channel(
         self, tmp_path: Path, capsys: pytest.CaptureFixture, caplog: pytest.LogCaptureFixture
@@ -2246,33 +2236,143 @@ class TestWalkCorpusRootsSkipsNonFiles:
         assert skips == []
 
 
-class TestRenderLines:
-    def test_locator_only_ranked_line_renders_only_the_provenance_header(self, tmp_path) -> None:
-        hit = _hit(
-            str(tmp_path / "planning" / "a.md"),
-            "some body text",
-            heading_path=["Heading"],
-            project_root=tmp_path,
-        )
-        line = RankedLine(scored=ScoredHit(hit=hit, score=1.0), locator_only=True)
-        rendered = _render_ranked_line(line)
-        assert "some body text" not in rendered
-        assert "planning/a.md" in rendered
-        assert str(tmp_path) not in rendered
+def _split_table_row(row: str) -> list[str]:
+    """Split a rendered Markdown table row into its cell texts.
 
-    def test_full_ranked_line_with_empty_body_renders_only_the_header(self) -> None:
-        hit = _hit("a.md", "", heading_path=["Heading"])
-        line = RankedLine(scored=ScoredHit(hit=hit, score=1.0), locator_only=False)
-        rendered = _render_ranked_line(line)
-        assert rendered.count("\n") == 0
+    Mirrors cmark-gfm's row scanner rather than a regex: a backslash escapes
+    exactly the character that follows it, so `\\|` is a literal pipe and
+    `\\\\` is a literal backslash immediately followed by an unescaped
+    delimiter — a distinction `(?<!\\\\)\\|` cannot make, since it reads any
+    single backslash ahead of a pipe as an escape regardless of what
+    produced it. `_escape_cell()`'s guarantee is exactly this: however many
+    backslashes and pipes a value holds, the row splits back into the
+    column count it was built from.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    index = 0
+    while index < len(row):
+        char = row[index]
+        if char == "\\" and index + 1 < len(row):
+            current.append(char)
+            current.append(row[index + 1])
+            index += 2
+            continue
+        if char == "|":
+            parts.append("".join(current))
+            current = []
+            index += 1
+            continue
+        current.append(char)
+        index += 1
+    parts.append("".join(current))
+    # The row always opens and closes with an unescaped "|" (see
+    # `_render_table_row`), so the first and last split are the empty text
+    # outside the table delimiters, not data cells.
+    return [cell.strip() for cell in parts[1:-1]]
 
-    def test_provenance_falls_back_to_the_absolute_path_outside_its_project_root(
+
+class TestRenderTable:
+    """Unit-level coverage of the locator table's row and cell rendering (§5.6)."""
+
+    def test_escape_cell_collapses_newlines_before_escaping_pipes(self) -> None:
+        assert _escape_cell("a\nb|c") == "a b\\|c"
+
+    @pytest.mark.parametrize(
+        "kind", ["untyped", "docs", "roadmap", "failure", "alternative", "constraint"]
+    )
+    def test_row_carries_all_five_columns_in_order_for_every_tier(self, kind: str) -> None:
+        hit = _hit("a.md", "body", kind=kind, heading_path=["H"])
+        row = _render_table_row(ScoredHit(hit=hit, score=1.0, base_score=1.0))
+        cells = [c.strip() for c in row.strip("|").split("|")]
+        assert cells == ["1", kind, "repo", "a.md", "H"]
+
+    @pytest.mark.parametrize("field", ["path", "repo", "heading"])
+    def test_a_pipe_in_the_path_repo_or_heading_cell_is_escaped(self, field: str) -> None:
+        kwargs = {"repo": "repo", "heading_path": ["H"]}
+        path = "a.md"
+        if field == "path":
+            path = "a|b.md"
+        elif field == "repo":
+            kwargs["repo"] = "a|b"
+        else:
+            kwargs["heading_path"] = ["H|1"]
+        hit = _hit(path, "body", **kwargs)
+        row = _render_table_row(ScoredHit(hit=hit, score=1.0, base_score=1.0))
+        assert "\\|" in row
+        # The escaped pipe must not read as a real column boundary.
+        assert len(_split_table_row(row)) == 5
+
+    @pytest.mark.parametrize("field", ["path", "repo", "heading"])
+    def test_a_backslash_immediately_before_a_pipe_still_splits_into_five_cells(
+        self, field: str
+    ) -> None:
+        # A `\|` in the source value must not defeat the pipe guard: escaping
+        # `|` alone without first escaping `\` turns it into a bare,
+        # unescaped delimiter under cmark-gfm's row scanner.
+        kwargs = {"repo": "repo", "heading_path": ["H"]}
+        path = "a.md"
+        if field == "path":
+            path = "a\\|b.md"
+        elif field == "repo":
+            kwargs["repo"] = "a\\|b"
+        else:
+            kwargs["heading_path"] = ["a\\|b"]
+        hit = _hit(path, "body", **kwargs)
+        row = _render_table_row(ScoredHit(hit=hit, score=1.0, base_score=1.0))
+        assert len(_split_table_row(row)) == 5
+
+    @pytest.mark.parametrize("field", ["path", "repo", "heading"])
+    def test_a_newline_in_the_path_repo_or_heading_cell_collapses_to_one_line(
+        self, field: str
+    ) -> None:
+        kwargs = {"repo": "repo", "heading_path": ["H"]}
+        path = "a.md"
+        if field == "path":
+            path = "a\nb.md"
+        elif field == "repo":
+            # The `repo` cell is the one channel no config check can
+            # intercept: it is a sibling checkout's directory name under
+            # `--related`, plain text rather than something a shape check
+            # parses (§5.6).
+            kwargs["repo"] = "a\nb"
+        else:
+            kwargs["heading_path"] = ["H\n1"]
+        hit = _hit(path, "body", **kwargs)
+        row = _render_table_row(ScoredHit(hit=hit, score=1.0, base_score=1.0))
+        assert "\n" not in row
+        assert len(_split_table_row(row)) == 5
+
+    def test_relative_display_falls_back_to_the_absolute_path_outside_its_base(
         self, tmp_path: Path
     ) -> None:
+        # `_walk_corpus_roots`'s containment check keeps a real Hit's path
+        # from ever reaching this branch (§5.6); the fallback itself still
+        # has to exist for `_relative_display`'s other, less-guarded callers
+        # (a footer skip locator, a roadmap label).
         outside = tmp_path.parent / "elsewhere" / "a.md"
-        hit = _hit(str(outside), "body", project_root=tmp_path)
-        line = RankedLine(scored=ScoredHit(hit=hit, score=1.0), locator_only=True)
-        assert str(outside) in _render_ranked_line(line)
+        assert _relative_display(outside, tmp_path) == str(outside)
+
+    def test_a_hit_with_an_empty_heading_chain_renders_an_empty_heading_cell(self) -> None:
+        hit = _hit("a.md", "body", heading_path=[])
+        row = _render_table_row(ScoredHit(hit=hit, score=1.0, base_score=1.0))
+        cells = [c.strip() for c in row.strip("|").split("|")]
+        assert len(cells) == 5
+        assert cells[-1] == ""
+
+    def test_the_score_cell_is_the_base_score_even_for_a_decayed_head_row(self) -> None:
+        # Two sections in one file: the second pick is discounted by
+        # FILE_DECAY, so its `score` and `base_score` diverge, and the table
+        # must render the latter.
+        first = _hit("a.md", "sysroot sysroot sysroot", heading_path=["One"])
+        second = _hit("a.md", "sysroot sysroot", heading_path=["Two"])
+        ranked = Bm25Ranker([first, second], "sysroot").rank()
+        decayed = next(sh for sh in ranked if sh.score != sh.base_score)
+
+        row = _render_table_row(decayed)
+
+        assert f"| {decayed.base_score:.3g} |" in row
+        assert f"| {decayed.score:.3g} |" not in row
 
     def test_an_unrecognized_kind_reaching_the_renderer_raises(self) -> None:
         hit = Hit(
@@ -2283,77 +2383,35 @@ class TestRenderLines:
             cost_words=1,
             fields={},
             repo="r",
-            platform="gitlab",
             project_root=Path("."),
         )
-        line = RankedLine(scored=ScoredHit(hit=hit, score=1.0), locator_only=True)
         with pytest.raises(ValueError, match="bogus"):
-            _render_ranked_line(line)
+            _render_table_row(ScoredHit(hit=hit, score=1.0, base_score=1.0))
 
-    def test_locator_only_roadmap_line_renders_a_locator(self) -> None:
-        entry = RoadmapEntry(path=Path("a/overview.md"), label="a", text="entry")
-        rendered = _render_roadmap_line(RoadmapLine(entry=entry, locator_only=True))
-        assert "overview.md" in rendered
+    def test_zero_matches_renders_the_table_header_and_no_rows(self) -> None:
+        digest = _assemble_digest(
+            roadmap_entries=[],
+            ranked_hits=[],
+            doc_frequency={},
+            resolved_projects=[],
+            skips=[],
+            zero_related=False,
+        )
+        lines = digest.render_markdown().splitlines()
+        header_index = lines.index("| score | tier | repo | path | heading |")
+        assert lines[header_index + 1] == "|---|---|---|---|---|"
+        assert lines[header_index + 2] == ""
+
+    def test_render_roadmap_entry_never_degrades(self) -> None:
+        long_text = " ".join(["word"] * 200)
+        entry = RoadmapEntry(path=Path("a/overview.md"), label="a", text=long_text)
+        assert _render_roadmap_entry(entry) == f"- {long_text}"
 
     def test_a_multi_line_roadmap_text_renders_as_one_list_item(self) -> None:
         entry = RoadmapEntry(
             path=Path("a/overview.md"), label="a", text="a\n\n## Prior decisions\n\n---"
         )
-        rendered = _render_roadmap_line(RoadmapLine(entry=entry, locator_only=False))
-        assert rendered == "- a ## Prior decisions ---"
-
-
-def test_digest_footer_names_the_number_of_roadmap_entries_dropped_for_budget() -> None:
-    # 100 entries at 5 words each render to 6 words a line, so the 300-word
-    # roadmap share (30% of WORD_BUDGET) fits 50 in full and leaves nothing
-    # for a locator tier — every entry past that is dropped outright.
-    entries = [_entry(str(i), 5) for i in range(100)]
-    digest = _assemble_digest(
-        roadmap_entries=entries,
-        ranked_hits=[],
-        doc_frequency={},
-        resolved_projects=[],
-        skips=[],
-        zero_related=False,
-    )
-    rendered = digest.render_markdown()
-    assert digest.roadmap_dropped == 50
-    assert "dropped for budget: 50" in rendered
-
-
-def test_digest_footer_names_the_ranked_matches_the_budget_could_not_show() -> None:
-    ranked_hits = [ScoredHit(hit=_hit(f"{i}.md", "word " * 60), score=1.0) for i in range(400)]
-    digest = _assemble_digest(
-        roadmap_entries=[],
-        ranked_hits=ranked_hits,
-        doc_frequency={},
-        resolved_projects=[],
-        skips=[],
-        zero_related=False,
-        ranked_omitted=7,
-    )
-    rendered = digest.render_markdown()
-    assert digest.ranked_dropped == 400 - len(digest.ranked_lines)
-    assert f"### {digest.ranked_dropped} further matches not shown (budget exhausted)" in rendered
-
-
-def test_cap_omitted_units_are_named_apart_from_the_budget_exhausted_ones() -> None:
-    # Nothing overflows the budget here, so any "budget exhausted" line would
-    # be naming a cause that did not apply.
-    digest = _assemble_digest(
-        roadmap_entries=[],
-        ranked_hits=[ScoredHit(hit=_hit("a.md", "word " * 5), score=1.0)],
-        doc_frequency={},
-        resolved_projects=[],
-        skips=[],
-        zero_related=False,
-        ranked_omitted=50,
-    )
-    rendered = digest.render_markdown()
-    assert digest.ranked_dropped == 0
-    assert digest.ranked_omitted == 50
-    assert "### 50 further matches not ranked (candidate cap)" in rendered
-    assert "budget exhausted" not in rendered
+        assert _render_roadmap_entry(entry) == "- a ## Prior decisions ---"
 
 
 def test_a_multi_line_skip_reason_renders_as_one_footer_list_item() -> None:
@@ -2369,24 +2427,6 @@ def test_a_multi_line_skip_reason_renders_as_one_footer_list_item() -> None:
     assert footer.splitlines()[:1] == ["- related: config fault: line one line two"]
 
 
-def test_the_two_halves_together_are_bounded_by_the_word_budget() -> None:
-    entries = [_entry(str(i), 20) for i in range(100)]
-    ranked_hits = [ScoredHit(hit=_hit(f"{i}.md", "word " * 60), score=1.0) for i in range(400)]
-    digest = _assemble_digest(
-        roadmap_entries=entries,
-        ranked_hits=ranked_hits,
-        doc_frequency={},
-        resolved_projects=[],
-        skips=[],
-        zero_related=False,
-    )
-    rendered = digest.render_markdown()
-    halves = rendered[: rendered.rindex("\n---\n")]
-    # Each half can overshoot by at most the one locator line that crosses
-    # its remaining share, so the pair is bounded well under twice the budget.
-    assert len(halves.split()) <= WORD_BUDGET + 100
-
-
 # ---------------------------------------------------------------------------
 # Corpus-shaped invariants — asserted against a committed tree, then again
 # against this repository's own
@@ -2399,14 +2439,6 @@ _SYNTHETIC_CORPUS = _REPO_ROOT / "tests" / "fixtures" / "docs_search_corpus"
 # (FR-25 models 7-22 words); anything past this bound is a section body that
 # escaped into the entry.
 _ROADMAP_ENTRY_WORD_BOUND = 40
-
-# The two halves are budgeted to WORD_BUDGET between them, and each half can
-# overshoot by at most the width of the one locator line that crosses its
-# remaining share. A locator is a provenance header, so 100 words covers two
-# of them with room to spare — and unlike a multiple of the budget, this
-# ceiling is close enough to the bound that an unbudgeted locator tier
-# overruns it on a corpus of any size.
-_DIGEST_WORD_CEILING = WORD_BUDGET + 100
 
 
 class _CorpusInvariants:
@@ -2431,17 +2463,17 @@ class _CorpusInvariants:
         # The folder label is not an identity — the sanctioned layout permits
         # an overview.md beside a status.md — but the source file is.
         digest, _out = self._run(capsys)
-        paths = {line.entry.path for line in digest.roadmap_lines}
-        assert len(paths) == len(digest.roadmap_lines)
+        paths = {entry.path for entry in digest.roadmap_entries}
+        assert len(paths) == len(digest.roadmap_entries)
 
     def test_every_roadmap_entry_stays_within_the_entry_word_bound(
         self, capsys: pytest.CaptureFixture
     ) -> None:
         digest, _out = self._run(capsys)
         oversized = [
-            line.entry.text
-            for line in digest.roadmap_lines
-            if len(line.entry.text.split()) > _ROADMAP_ENTRY_WORD_BOUND
+            entry.text
+            for entry in digest.roadmap_entries
+            if len(entry.text.split()) > _ROADMAP_ENTRY_WORD_BOUND
         ]
         assert oversized == []
 
@@ -2451,12 +2483,13 @@ class _CorpusInvariants:
         _digest, out = self._run(capsys)
         assert str(self._root()) not in out
 
-    def test_the_two_halves_together_stay_within_the_word_ceiling(
+    def test_the_footers_matched_unit_total_equals_the_emitted_row_count(
         self, capsys: pytest.CaptureFixture
     ) -> None:
-        _digest, out = self._run(capsys)
-        halves = out[: out.rindex("\n---\n")]
-        assert len(halves.split()) <= _DIGEST_WORD_CEILING
+        digest, out = self._run(capsys)
+        assert digest.matched_unit_total == len(digest.ranked_hits)
+        assert f"- {digest.matched_unit_total} unit(s) matched" in out
+        assert _count_table_rows(out) == digest.matched_unit_total
 
     def test_stdout_carries_exactly_the_two_documented_headings(
         self, capsys: pytest.CaptureFixture
@@ -2480,7 +2513,7 @@ class TestSyntheticCorpus(_CorpusInvariants):
         # label built from one path component alone collapses four labels
         # into three and still passes any count-based assertion.
         digest, _out = self._run(capsys)
-        assert [line.entry.label for line in digest.roadmap_lines] == [
+        assert [entry.label for entry in digest.roadmap_entries] == [
             "planning/goal-alpha/milestone-01-core",
             "planning/goal-alpha",
             "planning/goal-alpha",
@@ -2495,13 +2528,11 @@ class TestSyntheticCorpus(_CorpusInvariants):
         # guard over nothing, and this fixture is the one input under our
         # control — so its shape is pinned alongside the invariants.
         digest, _out = self._run(capsys)
-        assert digest.roadmap_lines
-        assert len({line.entry.path.parent for line in digest.roadmap_lines}) < len(
-            digest.roadmap_lines
+        assert digest.roadmap_entries
+        assert len({entry.path.parent for entry in digest.roadmap_entries}) < len(
+            digest.roadmap_entries
         )
-        assert any(line.locator_only for line in digest.ranked_lines)
-        assert digest.ranked_dropped > 0
-        assert digest.ranked_lines[0].scored.hit.kind == "failure"
+        assert digest.ranked_hits[0].hit.kind == "failure"
 
 
 class TestRealPlanningCorpus(_CorpusInvariants):
@@ -2516,3 +2547,41 @@ class TestRealPlanningCorpus(_CorpusInvariants):
         if not planning.is_dir() or not any(planning.rglob("*.md")):
             pytest.skip("this repository has no planning/ tree to index")
         return _REPO_ROOT
+
+
+# ---------------------------------------------------------------------------
+# A corpus sized above the reordering bound — committed rather than relying
+# on this repository's own gitignored planning/ tree (which yields far fewer
+# matched units than RANKED_CANDIDATE_CAP and so cannot exercise this case
+# on a fresh checkout, per design.md §6).
+# ---------------------------------------------------------------------------
+
+_SCALE_CORPUS = _REPO_ROOT / "tests" / "fixtures" / "docs_search_corpus_scale"
+_SCALE_CORPUS_UNITS = 220
+
+
+class TestCorpusScaleBound:
+    """220 matched units against a 200-unit bound, each unit its own file and
+    directory so diversify decay never fires — every matched unit still
+    reaches the caller, in strict descending base score (§6 Integration)."""
+
+    def test_every_matched_unit_above_the_bound_reaches_the_table(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        digest = DocsSearchHandler(repo_root=_SCALE_CORPUS).search("scaleboundprobe", related=False)
+        out = capsys.readouterr().out
+
+        assert digest.matched_unit_total == _SCALE_CORPUS_UNITS
+        assert len(digest.ranked_hits) == _SCALE_CORPUS_UNITS
+        assert RANKED_CANDIDATE_CAP < _SCALE_CORPUS_UNITS
+        # The requirement this fixture exists to exercise: guard the row
+        # count actually printed, not the data model a truncated render
+        # loop would leave untouched.
+        assert _count_table_rows(out) == _SCALE_CORPUS_UNITS
+
+        scores = [sh.base_score for sh in digest.ranked_hits]
+        assert scores == sorted(scores, reverse=True)
+        # No per-file or per-directory repeat anywhere in this fixture, so
+        # nothing is ever decayed — head and tail alike render their own
+        # undecayed score.
+        assert all(sh.score == sh.base_score for sh in digest.ranked_hits)

@@ -22,13 +22,14 @@ The `comment` command is the bridge between a `code-review.md` artifact and the 
 ### Local docs search
 
 `projctl search docs "cross toolchain sysroot"` ranks the current repository's `planning/` tree and
-docs root — and, with `--related`, every project declared in `search.related` — into a bounded
-Markdown digest of prior decisions and the current roadmap. It runs offline: no config file, no
-network call, and no platform gate, unlike the other `search` types. Ranking sees a fixed candidate
-cap of the best-scoring units plus every open-failure record, so an ambient query is bounded by that
-cap as well as by the word budget, and the footer names each count separately.
+docs root — and, with `--related`, every project declared in `search.related` — into a locator table
+of prior decisions plus the current roadmap. It runs offline: no config file, no network call, and no
+platform gate, unlike the other `search` types. Every matched unit reaches the table as one row (score,
+tier, repo, path, heading); the fixed candidate cap only bounds how many of the best-scoring units pass
+through the quadratic diversity-reordering pass, not how many rows are emitted. The footer's
+`### Matched units` line names the total, which always equals the table's row count.
 
-`projctl --verbose search docs "<query>"` turns on the debug channel — every resolved corpus root with its origin, every skipped path with its reason, and the score components of each unit that matched a query token, including the ones the digest did not show. The digest carries no error channel of its own, so this is the route to answering why an expected document did not appear.
+`projctl --verbose search docs "<query>"` turns on the debug channel — every resolved corpus root with its origin, every skipped path with its reason, and the score components of every unit that matched a query token. The digest carries no error channel of its own, so this is the route to answering why an expected document did not appear.
 
 ### Planning sync
 
