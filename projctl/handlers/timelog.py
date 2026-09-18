@@ -13,6 +13,8 @@ from ..utils.git_helpers import (
     parse_issue_url,
     parse_mr_url,
 )
+from ..utils.gitlab_identity import CURRENT_USER_QUERY as _CURRENT_USER_QUERY
+from ..utils.gitlab_identity import extract_current_username as _extract_current_username
 from ..utils.glab_runner import parse_graphql_data, run_glab_command
 
 logger = logging.getLogger(__name__)
@@ -26,8 +28,6 @@ _PAGE_SIZE = 100
 # means the server is malfunctioning, not that the window is legitimately
 # large.
 _MAX_PAGES = 200
-
-_CURRENT_USER_QUERY = "query { currentUser { username } }"
 
 _TIMELOGS_QUERY = (
     "query("
@@ -309,28 +309,12 @@ class TimelogHandler:
     def _resolve_current_user(self) -> str:
         """Resolve the authenticated GitLab username via GraphQL.
 
-        This is the load-bearing safety check for the whole command: `glab`
-        resolves its target host from the current directory's git remote and
-        silently falls back to a default host outside a GitLab repo, at exit
-        code 0 with `currentUser: null`. For a command whose entire purpose
-        is answering "did I log time", treating that null as "zero results"
-        would be indistinguishable from a true zero — so it is a hard error
-        instead, naming the likely cause.
-
         Raises:
             PlatformError: If currentUser resolves to null, or the request fails.
         """
         cmd = ["api", "graphql", "-f", f"query={_CURRENT_USER_QUERY}"]
         data = parse_graphql_data(run_glab_command(cmd))
-        username = (data.get("currentUser") or {}).get("username")
-        if not username:
-            raise PlatformError(
-                "GitLab GraphQL currentUser returned null — glab likely resolved the "
-                "wrong host (e.g. this directory has no GitLab remote, so glab fell "
-                "back to a default host with no authenticated session). Run from "
-                "inside a GitLab-remote repository, or check 'glab auth status'."
-            )
-        return str(username)
+        return _extract_current_username(data)
 
     def _fetch_timelogs(
         self, username: str, start_time: datetime, end_time: datetime

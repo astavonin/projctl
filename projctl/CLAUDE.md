@@ -332,7 +332,11 @@ projctl load milestone "%123"
 # Merge Request
 projctl load mr 134
 projctl load mr "!134"
+projctl load mr 134 --comments
+projctl load mr 134 --comments --json
 ```
+
+`--comments --json` emits the folded discussion-thread payload as JSON instead of markdown — GitLab only, and only for `load mr --comments`; rejected on GitHub, on any other resource type, or with `--comments` omitted. The payload has three key sets, each asserted in `handlers/loader.py` against a module-level tuple of the same name: the envelope (`ENVELOPE_FIELDS`) — `viewer`, `author_username`, `source_project_id`, `target_project_id`, `web_url`, `title`, `source_branch`, `target_branch`; the thread record (`THREAD_RECORD_FIELDS`) — `discussion_id`, `notes`, `resolvable`, `resolved`, `claim`, `file_path`, `line`, `created_at`, `skip`, `skip_reason`; and the note record (`NOTE_RECORD_FIELDS`), one per thread's `notes` list — `id`, `discussion_id`, `author`, `author_username`, `body`, `resolvable`, `resolved`, `file_path`, `line`, `created_at`.
 
 **Search:**
 ```bash

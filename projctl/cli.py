@@ -98,7 +98,11 @@ def _dispatch_github_load(loader: GithubLoader, resource_type: str, reference: s
 
 
 def _dispatch_load(
-    loader: TicketLoader, resource_type: str, reference: str, comments: bool = False
+    loader: TicketLoader,
+    resource_type: str,
+    reference: str,
+    comments: bool = False,
+    json_output: bool = False,
 ) -> None:
     """Dispatch a load + print call based on resource type.
 
@@ -107,8 +111,25 @@ def _dispatch_load(
         resource_type: One of "mr", "epic", "milestone", "issue".
         reference: The resource reference string.
         comments: When True and resource_type is "mr", also fetch and print review comments.
+        json_output: When True (mr + comments only — validated by the caller),
+            emit the folded thread JSON instead of printing markdown.
+
+    Raises:
+        PlatformError: If loading fails, including a malformed mr --json note
+            payload (any other failure propagates from the loader itself).
     """
     if resource_type == "mr":
+        if json_output:
+            try:
+                payload = loader.load_mr_comments_json(reference)
+            except KeyError as err:
+                # A missing key here is malformed upstream data, not a programming
+                # error, and this is the only load path that can raise it.
+                raise PlatformError(
+                    f"malformed note payload in MR comments — missing key {err}"
+                ) from err
+            print(json.dumps(payload, indent=2))
+            return
         if comments:
             data = loader.load_mr_comments(reference)
         else:
@@ -120,6 +141,21 @@ def _dispatch_load(
         loader.print_milestone_info(loader.load_milestone_with_issues(reference))
     else:
         loader.print_ticket_info(loader.load_ticket_with_epic(reference))
+
+
+def _validate_load_json_args(config: Config, args) -> str | None:
+    """Return an error message if --json cannot be honoured, or None when valid.
+
+    --json is scoped to 'load mr --comments' on GitLab: the folded thread
+    payload loader.py builds has no GitHub or non-comment-MR counterpart.
+    """
+    if not getattr(args, "json", False):
+        return None
+    if config.platform != "gitlab":
+        return "--json is only supported on GitLab"
+    if args.resource_type != "mr" or not getattr(args, "comments", False):
+        return "--json is only supported for 'load mr --comments'"
+    return None
 
 
 def cmd_load(args) -> int:
@@ -135,6 +171,11 @@ def cmd_load(args) -> int:
         config_path = Path(args.config) if args.config else None
         config = Config(config_path)
 
+        error = _validate_load_json_args(config, args)
+        if error:
+            print(f"Error: {error}", file=sys.stderr)
+            return 1
+
         if config.platform == "github":
             gh_loader = GithubLoader(config=config)
             _dispatch_github_load(gh_loader, args.resource_type, args.reference)
@@ -145,6 +186,7 @@ def cmd_load(args) -> int:
                 args.resource_type,
                 args.reference,
                 comments=getattr(args, "comments", False),
+                json_output=getattr(args, "json", False),
             )
         return 0
     except FileNotFoundError as err:
@@ -866,6 +908,7 @@ Examples:
   load epic &21
   load milestone %%123
   load mr !134
+  load mr 134 --comments --json
   load issue https://gitlab.com/group/project/-/issues/113
         """,
     )
@@ -887,6 +930,13 @@ Examples:
         action="store_true",
         default=False,
         help="Also load and display review comments (MR only)",
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Emit folded discussion threads as JSON instead of markdown "
+        "(GitLab 'load mr --comments' only)",
     )
 
 

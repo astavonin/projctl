@@ -1,10 +1,23 @@
-"""Ticket (issue/epic/milestone/MR) loader handler."""
+# pylint: disable=too-many-lines
+# One handler class covering issue/epic/milestone/MR loading plus the --json
+# fold; splitting it would scatter one resource type's load path across
+# multiple files for no locality gain.
+"""Ticket (issue/epic/milestone/MR) loader handler.
+
+`load_mr_comments_json()` is the `--json` counterpart to `load_mr_comments()`:
+it folds the same notes into one thread record per discussion and adds the
+viewer identity, under the key contract ENVELOPE_FIELDS / THREAD_RECORD_FIELDS
+/ NOTE_RECORD_FIELDS own — the whole cross-repo contract for a consumer this
+repository does not ship, so the emitted keys are asserted against those
+tuples rather than left to drift.
+"""
 
 import json
 import logging
 import re
 import urllib.parse
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from ..config import Config
 from ..exceptions import PlatformError
@@ -16,9 +29,250 @@ from ..formatters import (
     print_mr_comments,
 )
 from ..utils.git_helpers import extract_path_from_url, parse_epic_url, parse_issue_url
-from ..utils.glab_runner import run_glab_command
+from ..utils.gitlab_identity import CURRENT_USER_QUERY, extract_current_username
+from ..utils.glab_runner import parse_graphql_data, run_glab_command
 
 logger = logging.getLogger(__name__)
+
+# Each tuple owns one --json payload level's key set; a producer test asserts the built
+# dict's keys equal it, so an added or dropped field cannot drift out of the contract.
+ENVELOPE_FIELDS: Tuple[str, ...] = (
+    "viewer",
+    "author_username",
+    "source_project_id",
+    "target_project_id",
+    "web_url",
+    "title",
+    "source_branch",
+    "target_branch",
+)
+
+THREAD_RECORD_FIELDS: Tuple[str, ...] = (
+    "discussion_id",
+    "notes",
+    "resolvable",
+    "resolved",
+    "claim",
+    "file_path",
+    "line",
+    "created_at",
+    "skip",
+    "skip_reason",
+)
+
+NOTE_RECORD_FIELDS: Tuple[str, ...] = (
+    "id",
+    "discussion_id",
+    "author",
+    "author_username",
+    "body",
+    "resolvable",
+    "resolved",
+    "file_path",
+    "line",
+    "created_at",
+)
+
+# skip_reason values, evaluated against a thread in this order — the first
+# arm to fire owns the reason.
+_SKIP_RESOLVED = "resolved"
+_SKIP_BLANK_DISCUSSION_ID = "blank_discussion_id"
+_SKIP_UNUSABLE_CREATED_AT = "unusable_created_at"
+_SKIP_ANSWERED_BY_VIEWER = "answered_by_viewer"
+_SKIP_UNIDENTIFIABLE_AUTHOR = "unidentifiable_author"
+
+# Sorts before every real GitLab timestamp, so a note with no usable
+# created_at never silently wins "last note" — the thread's own
+# unusable-created_at arm is what actually excludes it from adjudication.
+_UNUSABLE_TIMESTAMP_SORT_FLOOR = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _parse_note_timestamp(value: str) -> Optional[datetime]:
+    """Parse a GitLab note's created_at, or None if empty, unparseable, or naive."""
+    if not value:
+        return None
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        # Naive parses but can't compare against an aware sibling or the
+        # sort floor, so it is treated as unusable rather than assumed-UTC.
+        return None
+    return parsed
+
+
+def _note_sort_key(note: Dict[str, Any]) -> Tuple[datetime, Any]:
+    """Ascending (created_at, id) sort key — ties on id, unusable timestamps sort first."""
+    parsed = _parse_note_timestamp(note["created_at"]) or _UNUSABLE_TIMESTAMP_SORT_FLOOR
+    return (parsed, note["id"])
+
+
+def _iter_filtered_notes(
+    raw_discussions: List[Dict[str, Any]],
+) -> Iterator[Tuple[str, Dict[str, Any]]]:
+    """Yield (discussion_id, note) for every note load_mr_comments() would keep.
+
+    Shared by the Markdown path and the --json fold so a system note or a
+    blank-body note cannot be visible on one path and hidden on the other.
+    """
+    for discussion in raw_discussions or []:
+        # dict.get(key, "") returns None for an explicit JSON null, which
+        # would violate the str type documented above.
+        discussion_id = discussion.get("id") or ""
+        for note in discussion.get("notes") or []:
+            if note.get("system"):
+                continue
+            # `.get(key, "")` returns None for an explicit JSON null, not just an
+            # absent key — the same trap _project_envelope() guards above.
+            if not (note.get("body") or "").strip():
+                continue
+            yield discussion_id, note
+
+
+def _build_json_note(discussion_id: str, note: Dict[str, Any]) -> Dict[str, Any]:
+    """Build one --json note record: load_mr_comments()'s fields plus author_username."""
+    position = note.get("position") or {}
+    author = note.get("author") or {}
+    return {
+        "id": note["id"],
+        "discussion_id": discussion_id,
+        # `.get(key, "Unknown")` returns None for an explicit JSON null, not just
+        # an absent key — the same trap guarded elsewhere in this function.
+        "author": author.get("name") or "Unknown",
+        "author_username": author.get("username") or "",
+        "body": (note.get("body") or "").strip(),
+        "resolvable": note.get("resolvable", False),
+        "resolved": note.get("resolved", False),
+        "file_path": position.get("new_path") or "",
+        "line": position.get("new_line") or "",
+        "created_at": note.get("created_at") or "",
+    }
+
+
+def _build_json_notes(raw_discussions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build the flat --json note-record list from raw discussion objects."""
+    return [
+        _build_json_note(discussion_id, note)
+        for discussion_id, note in _iter_filtered_notes(raw_discussions)
+    ]
+
+
+def _group_notes(notes: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """Group note records into threads by discussion_id.
+
+    A note whose discussion_id is blank forms its own single-note group —
+    grouping blank ids together would merge unrelated notes under a key the
+    reply/resolve endpoints reject (see loader module docstring).
+    """
+    groups: List[List[Dict[str, Any]]] = []
+    index_by_discussion_id: Dict[str, int] = {}
+    for note in notes:
+        discussion_id = note["discussion_id"]
+        if not discussion_id:
+            groups.append([note])
+            continue
+        idx = index_by_discussion_id.get(discussion_id)
+        if idx is None:
+            index_by_discussion_id[discussion_id] = len(groups)
+            groups.append([note])
+        else:
+            groups[idx].append(note)
+    return groups
+
+
+def _fold_thread(notes: List[Dict[str, Any]], viewer: str) -> Dict[str, Any]:
+    """Fold one discussion's note records into a single thread record.
+
+    Args:
+        notes: Every note record sharing one discussion_id (or, for a blank
+            discussion_id, the single note minted on its own — see
+            `_group_notes`), in transport order.
+        viewer: The authenticated username, compared against each note's
+            `author_username`.
+
+    Returns:
+        One thread record carrying exactly THREAD_RECORD_FIELDS.
+    """
+    resolvable_notes = [n for n in notes if n["resolvable"]]
+    resolvable = bool(resolvable_notes)
+    resolved = resolvable and all(n["resolved"] for n in resolvable_notes)
+
+    blank_discussion_id = notes[0]["discussion_id"] == ""
+    unusable_created_at = any(_parse_note_timestamp(n["created_at"]) is None for n in notes)
+
+    sorted_notes = sorted(notes, key=_note_sort_key)
+    last_note = sorted_notes[-1]
+
+    # The last note not authored by viewer, keeping a mid-thread reply from
+    # us out of the claim and letting a reviewer's follow-up replace it.
+    claim_note = None
+    for note in sorted_notes:
+        if note["author_username"] != viewer:
+            claim_note = note
+
+    if claim_note is not None:
+        claim = claim_note["body"]
+        file_path = claim_note["file_path"]
+        line = claim_note["line"]
+        created_at = claim_note["created_at"]
+    else:
+        claim = ""
+        file_path = ""
+        line = ""
+        created_at = ""
+
+    if resolved:
+        skip, skip_reason = True, _SKIP_RESOLVED
+    elif blank_discussion_id:
+        skip, skip_reason = True, _SKIP_BLANK_DISCUSSION_ID
+    elif unusable_created_at:
+        skip, skip_reason = True, _SKIP_UNUSABLE_CREATED_AT
+    elif last_note["author_username"] == viewer:
+        skip, skip_reason = True, _SKIP_ANSWERED_BY_VIEWER
+    elif last_note["author_username"] == "":
+        skip, skip_reason = True, _SKIP_UNIDENTIFIABLE_AUTHOR
+    else:
+        skip, skip_reason = False, ""
+
+    # A blank key groups nothing (see _group_notes); minting the id from the
+    # note itself keeps two such threads distinguishable in the gate.
+    discussion_id = str(notes[0]["id"]) if blank_discussion_id else notes[0]["discussion_id"]
+
+    return {
+        "discussion_id": discussion_id,
+        "notes": sorted_notes,
+        "resolvable": resolvable,
+        "resolved": resolved,
+        "claim": claim,
+        "file_path": file_path,
+        "line": line,
+        "created_at": created_at,
+        "skip": skip,
+        "skip_reason": skip_reason,
+    }
+
+
+def _project_envelope(mr_data: Dict[str, Any], viewer: str) -> Dict[str, Any]:
+    """Project glab's raw `mr view` payload onto the --json envelope's owned key set.
+
+    `load_mr_comments()`'s `mr` key is glab's own output verbatim, a key set
+    this repository does not own; --json emits a guarded projection instead.
+    """
+    author = mr_data.get("author") or {}
+    return {
+        "viewer": viewer,
+        # `.get(key, "")` returns None for an explicit JSON null, not just an
+        # absent key — the same trap _iter_filtered_notes() guards above.
+        "author_username": author.get("username") or "",
+        "source_project_id": mr_data.get("source_project_id"),
+        "target_project_id": mr_data.get("target_project_id"),
+        "web_url": mr_data.get("web_url") or "",
+        "title": mr_data.get("title") or "",
+        "source_branch": mr_data.get("source_branch") or "",
+        "target_branch": mr_data.get("target_branch") or "",
+    }
 
 
 class TicketLoader:
@@ -835,6 +1089,30 @@ class TicketLoader:
         mr_data = json.loads(output)
         return {"mr": mr_data}
 
+    def _fetch_mr_view_and_discussions(
+        self, mr_ref: str
+    ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+        """Fetch raw MR metadata and raw discussion objects for one normalized MR ref.
+
+        The one shared network boundary behind both load_mr_comments() and
+        load_mr_comments_json() — each folds these same discussions
+        differently rather than issuing the fetch twice.
+
+        Args:
+            mr_ref: Already-normalized (bare digit string) MR reference.
+
+        Returns:
+            Tuple of (mr metadata dict, list of raw discussion objects).
+
+        Raises:
+            PlatformError: If either glab call fails.
+        """
+        mr_data = json.loads(self._run_glab_command(["mr", "view", mr_ref, "--output", "json"]))
+        raw_discussions = json.loads(
+            self._run_glab_command(["mr", "note", "list", mr_ref, "--output", "json"])
+        )
+        return mr_data, raw_discussions
+
     def load_mr_comments(self, mr_ref: str) -> Dict[str, Any]:
         """Load MR metadata and non-system review comments (notes/discussions).
 
@@ -866,37 +1144,71 @@ class TicketLoader:
         mr_ref = self._normalize_mr_ref(mr_ref)
         logger.debug("Loading MR !%s comments", mr_ref)
 
-        mr_data = json.loads(self._run_glab_command(["mr", "view", mr_ref, "--output", "json"]))
-        raw_discussions = json.loads(
-            self._run_glab_command(["mr", "note", "list", mr_ref, "--output", "json"])
-        )
+        mr_data, raw_discussions = self._fetch_mr_view_and_discussions(mr_ref)
 
         comments: List[Dict[str, Any]] = []
-        for discussion in raw_discussions:
-            for note in discussion.get("notes", []):
-                if note.get("system"):
-                    continue
-                body = note.get("body", "").strip()
-                if not body:
-                    continue
-                position = note.get("position") or {}
-                comments.append(
-                    {
-                        "id": note["id"],
-                        # dict.get(key, "") returns None for an explicit JSON null,
-                        # which would violate the str type documented above.
-                        "discussion_id": discussion.get("id") or "",
-                        "author": note.get("author", {}).get("name", "Unknown"),
-                        "body": body,
-                        "resolvable": note.get("resolvable", False),
-                        "resolved": note.get("resolved", False),
-                        "file_path": position.get("new_path", ""),
-                        "line": position.get("new_line", ""),
-                        "created_at": note.get("created_at", ""),
-                    }
-                )
+        for discussion_id, note in _iter_filtered_notes(raw_discussions):
+            position = note.get("position") or {}
+            comments.append(
+                {
+                    "id": note["id"],
+                    "discussion_id": discussion_id,
+                    "author": (note.get("author") or {}).get("name") or "Unknown",
+                    # A null body here is unreachable: _iter_filtered_notes() already
+                    # filters it out above, the same way it filters an empty one.
+                    "body": note.get("body", "").strip(),
+                    "resolvable": note.get("resolvable", False),
+                    "resolved": note.get("resolved", False),
+                    # `.get(key, "")` returns None for an explicit JSON null, matching
+                    # the guard _build_json_note() already uses for the same fields.
+                    "file_path": position.get("new_path") or "",
+                    "line": position.get("new_line") or "",
+                    "created_at": note.get("created_at") or "",
+                }
+            )
 
         return {"mr": mr_data, "comments": comments}
+
+    def _resolve_viewer(self) -> str:
+        """Resolve the authenticated GitLab username for the --json envelope's `viewer` field.
+
+        Raises:
+            PlatformError: If currentUser resolves to null, or the request fails.
+        """
+        cmd = ["api", "graphql", "-f", f"query={CURRENT_USER_QUERY}"]
+        data = parse_graphql_data(self._run_glab_command(cmd))
+        return extract_current_username(data)
+
+    def load_mr_comments_json(self, mr_ref: str) -> Dict[str, Any]:
+        """Load MR metadata, the authenticated viewer, and folded discussion threads.
+
+        The --json counterpart to load_mr_comments(): the same one `mr view`
+        and `mr note list` call, folded into one thread record per
+        discussion rather than one record per note, plus the viewer
+        identity and a projected envelope.
+
+        Args:
+            mr_ref: MR reference (number, URL, or !number format).
+
+        Returns:
+            Dict with keys ``mr`` (ENVELOPE_FIELDS) and ``threads`` (a list
+            of THREAD_RECORD_FIELDS records, each carrying ``notes``: a list
+            of NOTE_RECORD_FIELDS records).
+
+        Raises:
+            PlatformError: If loading fails, or currentUser resolves to null.
+            KeyError: If a note payload omits its own ``id``.
+        """
+        mr_ref = self._normalize_mr_ref(mr_ref)
+        logger.debug("Loading MR !%s comments (--json)", mr_ref)
+
+        mr_data, raw_discussions = self._fetch_mr_view_and_discussions(mr_ref)
+        viewer = self._resolve_viewer()
+
+        flat_notes = _build_json_notes(raw_discussions)
+        threads = [_fold_thread(group, viewer) for group in _group_notes(flat_notes)]
+
+        return {"mr": _project_envelope(mr_data, viewer), "threads": threads}
 
     def print_mr_info(self, data: Dict[str, Any], with_comments: bool = False) -> None:
         """Print merge request information in markdown format.
