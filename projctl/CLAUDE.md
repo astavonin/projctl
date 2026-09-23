@@ -671,7 +671,7 @@ Report output is a per-day total, a per-issue (or per-MR) breakdown within each 
 
 ### Pipeline Debugging
 
-Debug failed CI/CD pipeline jobs. GitLab only.
+Debug CI/CD pipeline jobs. GitLab only.
 
 **By branch** — fetches all failed jobs from the latest pipeline on the branch:
 
@@ -680,11 +680,26 @@ projctl pipeline-debug
 projctl pipeline-debug --branch feature/my-branch
 ```
 
+**By job name** — fetches logs for every job with that name in the branch's latest pipeline, **whatever its status**:
+
+```bash
+projctl pipeline-debug --job-name ota-e2e
+projctl pipeline-debug --branch feature/my-branch --job-name ota-e2e
+```
+
 **By job ID** — fetches logs for a single job directly, bypassing branch and pipeline discovery:
 
 ```bash
 projctl pipeline-debug --job-id 5946580
 ```
+
+**Behavior notes:**
+- **`--job-name` is the only way to reach a job that passed.** The `--branch` form filters to `status == "failed"`, so a green job is invisible to it, and `artifacts` needs a `--job-id` this command is what discovers. The case that motivates it is a job carrying `allow_failure: true`: its pipeline reports `success` either way, so the job's own log is the only place its verdict exists. A log line that is printed but non-fatal — a failing cleanup step whose exit status never propagates — lives there and nowhere else.
+- **An unmatched `--job-name` prints "no job named X" and exits 0.** A job gated out by `rules:` never ran, which is a different answer from "ran and was clean" — reporting it as an empty log would read as the latter. Exit 0 because not running is a legitimate pipeline outcome, not a tool failure.
+- Name matching is exact, not a substring: `--job-name ota-e2e` does not match `ota-e2e-firmware`.
+- **`--job-id` and `--job-name` are mutually exclusive** and giving both exits 2. `--job-id` skips pipeline discovery, so there is no reading under which both selectors can be honoured — one of the two jobs would be printed and the other never mentioned.
+- A pipeline can hold several jobs of one name (a retry, or a matrix leg). All matches are printed, each under its own header with its own status — picking one silently would hide the retry that mattered.
+- **The job list is requested with `per_page=100`.** GitLab pages this collection at 20 by default, and a truncated list is indistinguishable from a job the pipeline never ran — the failure is silent in the direction that reads as "all clear". This applies to the `--branch` form too, which could previously miss failed jobs on a pipeline of more than 20.
 
 **Handler:** `handlers/pipeline_handler.py` — `PipelineHandler` class
 
@@ -707,6 +722,7 @@ projctl artifacts --job-id 12345 --dest ./out
 ```
 
 **Behavior notes:**
+- **`--job-id` is required and this command does not discover it.** To go from a branch to a job ID, run `pipeline-debug --job-name <name>` first and read the ID from its job header — that form matches at any status, so it reaches a passing job's ID as well as a failed one. Note also that a job's *console output* is not in its archive unless the job redirects it to an archived path; console output is `pipeline-debug`'s territory, not this command's.
 - `--dest` defaults to the current directory and is created if missing.
 - A single file is written to `<dest>/<path>`, mirroring the archive's directory layout rather than flattening to a basename — two artifacts can share a basename across directories, and flattening would silently overwrite one.
 - The full-archive path streams to `<dest>/artifacts.zip` without buffering in memory, then extracts via `ZipFile.extractall()` (which sanitizes member names, making extraction zip-slip safe).

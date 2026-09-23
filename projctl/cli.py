@@ -10,6 +10,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 try:
     import yaml
@@ -452,6 +453,7 @@ def _print_job_logs(handler: PipelineHandler, job: dict) -> None:
     job_duration = job.get("duration") or 0
 
     print(f"### Job: {job_name}\n")
+    print(f"- **Job ID:** {job_id}")
     print(f"- **Stage:** {job_stage}")
     print(f"- **Status:** {job_status}")
     print(f"- **Duration:** {job_duration:.1f}s\n")
@@ -494,8 +496,81 @@ def _cmd_pipeline_debug_by_job_id(args) -> int:
         return 1
 
 
+def _print_named_jobs(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    handler: PipelineHandler,
+    pipeline_id: int,
+    job_name: str,
+    branch: str,
+    pipeline_status: Any,
+    pipeline_url: Any,
+) -> None:
+    """Print every job matching *job_name*, with its log, whatever its status.
+
+    Args:
+        handler: PipelineHandler used to fetch jobs and logs.
+        pipeline_id: Pipeline to search.
+        job_name: Exact job name to match.
+        branch: Branch the pipeline belongs to, for the report header.
+        pipeline_status: Pipeline status, for the report header.
+        pipeline_url: Pipeline URL, for the report header.
+    """
+    named_jobs = handler.get_jobs_by_name(pipeline_id, job_name)
+
+    print("\n# Pipeline Debug Results\n")
+    print(f"**Branch:** {branch}")
+    print(f"**Pipeline:** #{pipeline_id} - {pipeline_status}")
+    print(f"**URL:** {pipeline_url}\n")
+
+    if not named_jobs:
+        # A job gated out by `rules:` never ran at all, and reporting that as an
+        # empty log would read as a clean run.
+        print(f"## No job named {job_name!r} in pipeline #{pipeline_id}\n")
+        return
+
+    print(f"## Jobs named {job_name!r} ({len(named_jobs)})\n")
+    for job in named_jobs:
+        _print_job_logs(handler, job)
+
+
+def _print_failed_jobs(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    handler: PipelineHandler,
+    pipeline_id: int,
+    branch: str,
+    pipeline_status: Any,
+    pipeline_url: Any,
+) -> None:
+    """Print each failed job in the pipeline, with its log.
+
+    Args:
+        handler: PipelineHandler used to fetch jobs and logs.
+        pipeline_id: Pipeline to search.
+        branch: Branch the pipeline belongs to, for the report header.
+        pipeline_status: Pipeline status, for the report header.
+        pipeline_url: Pipeline URL, for the report header.
+    """
+    failed_jobs = handler.get_failed_jobs(pipeline_id)
+
+    if not failed_jobs:
+        print(f"\n✓ No failed jobs in pipeline #{pipeline_id}")
+        print(f"Pipeline status: {pipeline_status}")
+        print(f"URL: {pipeline_url}\n")
+        return
+
+    print("\n# Pipeline Debug Results\n")
+    print(f"**Branch:** {branch}")
+    print(f"**Pipeline:** #{pipeline_id} - {pipeline_status}")
+    print(f"**URL:** {pipeline_url}\n")
+    print(f"## Failed Jobs ({len(failed_jobs)})\n")
+
+    for job in failed_jobs:
+        _print_job_logs(handler, job)
+
+
 def cmd_pipeline_debug(args) -> int:
-    """Handle the 'pipeline-debug' subcommand - debug failed pipeline jobs.
+    """Handle the 'pipeline-debug' subcommand - debug pipeline jobs.
+
+    Selects failed jobs by default; --job-name selects by name at any status, and
+    --job-id bypasses discovery entirely.
 
     Args:
         args: Parsed command-line arguments.
@@ -505,6 +580,8 @@ def cmd_pipeline_debug(args) -> int:
     """
     if args.job_id:
         return _cmd_pipeline_debug_by_job_id(args)
+
+    job_name = args.job_name
 
     try:
         config_path = Path(args.config) if args.config else None
@@ -523,22 +600,10 @@ def cmd_pipeline_debug(args) -> int:
             logger.error("Invalid pipeline ID: %s", pipeline_id)
             return 1
 
-        failed_jobs = handler.get_failed_jobs(pipeline_id)
-
-        if not failed_jobs:
-            print(f"\n✓ No failed jobs in pipeline #{pipeline_id}")
-            print(f"Pipeline status: {pipeline_status}")
-            print(f"URL: {pipeline_url}\n")
-            return 0
-
-        print("\n# Pipeline Debug Results\n")
-        print(f"**Branch:** {branch}")
-        print(f"**Pipeline:** #{pipeline_id} - {pipeline_status}")
-        print(f"**URL:** {pipeline_url}\n")
-        print(f"## Failed Jobs ({len(failed_jobs)})\n")
-
-        for job in failed_jobs:
-            _print_job_logs(handler, job)
+        if job_name:
+            _print_named_jobs(handler, pipeline_id, job_name, branch, pipeline_status, pipeline_url)
+        else:
+            _print_failed_jobs(handler, pipeline_id, branch, pipeline_status, pipeline_url)
 
         return 0
 
@@ -1903,14 +1968,25 @@ def _add_pipeline_debug_subparser(subparsers: argparse._SubParsersAction) -> Non
     """Register the 'pipeline-debug' subcommand."""
     p = subparsers.add_parser(
         "pipeline-debug",
-        help="Debug failed pipeline jobs",
+        help="Debug pipeline jobs (failed ones by default; any job with --job-name)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--branch", type=str, help="Branch name (default: current git branch)")
-    p.add_argument(
+    # Exclusive because --job-id skips pipeline discovery entirely: honouring both would
+    # mean printing one job while the user named another, with nothing to say so.
+    selector = p.add_mutually_exclusive_group()
+    selector.add_argument(
         "--job-id",
         type=int,
         help="Job ID to fetch logs from directly, bypassing branch/pipeline discovery.",
+    )
+    selector.add_argument(
+        "--job-name",
+        type=str,
+        help=(
+            "Job name to fetch logs from, whatever its status. Reaches a job that "
+            "passed, which --branch (failed jobs only) cannot."
+        ),
     )
 
 
@@ -2024,6 +2100,7 @@ Examples:
   %(prog)s activity
   %(prog)s activity 2026-08-05 --json
   %(prog)s pipeline-debug
+  %(prog)s pipeline-debug --job-name ota-e2e
   %(prog)s artifacts --job-id 12345 --path .build-12345/server.stdout
   %(prog)s ci lint
   %(prog)s config

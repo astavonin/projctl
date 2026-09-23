@@ -179,6 +179,34 @@ class PipelineHandler:
             logger.error(error_msg)
             raise PlatformError(error_msg) from err
 
+    def _fetch_pipeline_jobs(self, pipeline_id: int) -> List[Dict[str, Any]]:
+        """Fetch every job in a pipeline, whatever its status.
+
+        Args:
+            pipeline_id: Pipeline ID.
+
+        Returns:
+            list of dicts with job info (id, name, stage, status, etc.)
+
+        Raises:
+            PlatformError: If API error.
+        """
+        # Get project ID (cached, auto-detected from git or config)
+        project_id = self.get_project_id()
+        encoded_project = urllib.parse.quote(project_id, safe="")
+        # GitLab pages this collection at 20, and a truncated list reads as "no such
+        # job" rather than as an error.
+        api_endpoint = f"projects/{encoded_project}/pipelines/{pipeline_id}/jobs?per_page=100"
+
+        try:
+            output = self._run_glab_command(["api", api_endpoint])
+            jobs = json.loads(output) if output else []
+            return jobs  # type: ignore[no-any-return]  # json.loads is Any, endpoint returns list
+        except json.JSONDecodeError as err:
+            error_msg = f"Failed to parse API response: {err}"
+            logger.error(error_msg)
+            raise PlatformError(error_msg) from err
+
     def get_failed_jobs(self, pipeline_id: int) -> List[Dict[str, Any]]:
         """Get all failed jobs from a pipeline.
 
@@ -193,25 +221,38 @@ class PipelineHandler:
         """
         logger.debug("Fetching failed jobs for pipeline #%s", pipeline_id)
 
-        # Get project ID (cached, auto-detected from git or config)
-        project_id = self.get_project_id()
-        encoded_project = urllib.parse.quote(project_id, safe="")
-        api_endpoint = f"projects/{encoded_project}/pipelines/{pipeline_id}/jobs"
+        jobs = self._fetch_pipeline_jobs(pipeline_id)
+        failed_jobs = [job for job in jobs if job.get("status") == "failed"]
 
-        try:
-            output = self._run_glab_command(["api", api_endpoint])
-            jobs = json.loads(output) if output else []
+        logger.info("Found %d failed jobs in pipeline #%s", len(failed_jobs), pipeline_id)
+        return failed_jobs
 
-            # Filter for failed jobs
-            failed_jobs = [job for job in jobs if job.get("status") == "failed"]
+    def get_jobs_by_name(self, pipeline_id: int, job_name: str) -> List[Dict[str, Any]]:
+        """Get a pipeline's jobs with the given name, whatever their status.
 
-            logger.info("Found %d failed jobs in pipeline #%s", len(failed_jobs), pipeline_id)
-            return failed_jobs  # type: ignore[no-any-return]
+        Selecting by name rather than by failure is what reaches a job that passed.
+        A job carrying `allow_failure: true` keeps its pipeline green either way, so
+        pipeline status cannot stand in for reading that job's own log.
 
-        except json.JSONDecodeError as err:
-            error_msg = f"Failed to parse API response: {err}"
-            logger.error(error_msg)
-            raise PlatformError(error_msg) from err
+        Args:
+            pipeline_id: Pipeline ID.
+            job_name: Exact job name to match.
+
+        Returns:
+            list of dicts with job info; empty when the pipeline ran no such job.
+
+        Raises:
+            PlatformError: If API error.
+        """
+        logger.debug("Fetching jobs named %r for pipeline #%s", job_name, pipeline_id)
+
+        jobs = self._fetch_pipeline_jobs(pipeline_id)
+        matching = [job for job in jobs if job.get("name") == job_name]
+
+        logger.info(
+            "Found %d job(s) named %r in pipeline #%s", len(matching), job_name, pipeline_id
+        )
+        return matching
 
     def get_job_logs(self, job_id: int) -> str:
         """Fetch complete logs for a job.

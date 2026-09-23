@@ -229,6 +229,85 @@ class TestGetFailedJobs:
 
         assert len(failed_jobs) == 0
 
+    @patch("projctl.handlers.pipeline_handler.PipelineHandler._run_glab_command")
+    def test_job_list_request_is_not_truncated_to_the_api_default(
+        self, mock_run_glab: Mock, new_config_path: Path
+    ) -> None:
+        """The jobs request asks for a full page.
+
+        GitLab pages this collection at 20 by default, so a pipeline with more jobs
+        than that silently drops the rest -- and a dropped job is indistinguishable
+        from one the pipeline never ran.
+        """
+        config = Config(new_config_path)
+        handler = PipelineHandler(config)
+        mock_run_glab.return_value = "[]"
+
+        handler.get_failed_jobs(456)
+
+        assert "per_page=100" in " ".join(mock_run_glab.call_args[0][0])
+
+
+class TestGetJobsByName:
+    """Test selecting pipeline jobs by name regardless of status."""
+
+    @staticmethod
+    def _jobs_payload() -> str:
+        return json.dumps(
+            [
+                {"id": 1, "name": "ota-e2e", "stage": "e2e", "status": "success"},
+                {"id": 2, "name": "build", "stage": "build", "status": "success"},
+                {"id": 3, "name": "ota-e2e", "stage": "e2e", "status": "failed"},
+            ]
+        )
+
+    @patch("projctl.handlers.pipeline_handler.PipelineHandler._run_glab_command")
+    def test_returns_matching_jobs_whatever_their_status(
+        self, mock_run_glab: Mock, new_config_path: Path
+    ) -> None:
+        """A passing job is returned -- which is the whole point of selecting by name.
+
+        get_failed_jobs() filters to status == "failed", so a job carrying
+        allow_failure: true that passed is unreachable through it.
+        """
+        config = Config(new_config_path)
+        handler = PipelineHandler(config)
+        mock_run_glab.return_value = self._jobs_payload()
+
+        jobs = handler.get_jobs_by_name(456, "ota-e2e")
+
+        assert [job["id"] for job in jobs] == [1, 3]
+        assert {job["status"] for job in jobs} == {"success", "failed"}
+
+    @patch("projctl.handlers.pipeline_handler.PipelineHandler._run_glab_command")
+    def test_unknown_name_returns_empty_rather_than_raising(
+        self, mock_run_glab: Mock, new_config_path: Path
+    ) -> None:
+        """A job gated out by rules: never ran; that is a result, not an error."""
+        config = Config(new_config_path)
+        handler = PipelineHandler(config)
+        mock_run_glab.return_value = self._jobs_payload()
+
+        assert handler.get_jobs_by_name(456, "no-such-job") == []
+
+    @patch("projctl.handlers.pipeline_handler.PipelineHandler._run_glab_command")
+    def test_name_match_is_exact_not_substring(
+        self, mock_run_glab: Mock, new_config_path: Path
+    ) -> None:
+        """A substring match would pull in siblings like ota-e2e-firmware."""
+        config = Config(new_config_path)
+        handler = PipelineHandler(config)
+        mock_run_glab.return_value = json.dumps(
+            [
+                {"id": 1, "name": "ota-e2e-firmware", "stage": "e2e", "status": "success"},
+                {"id": 2, "name": "ota-e2e", "stage": "e2e", "status": "success"},
+            ]
+        )
+
+        jobs = handler.get_jobs_by_name(456, "ota-e2e")
+
+        assert [job["id"] for job in jobs] == [2]
+
 
 class TestGetJobLogs:
     """Test getting job logs."""
