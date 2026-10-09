@@ -43,6 +43,13 @@ _WORK_ITEM_STATUS_QUERY = (
     "} }"
 )
 
+# GitLab's issues PUT unsets a milestone when milestone_id is 0. An empty value is
+# documented to work too; 0 is used because it is explicit in the emitted
+# `glab api -f milestone_id=...` form field. Must stay an int, not None —
+# _build_put_cmd drops every field that `is not None`, so None would silently
+# omit the field and turn clearing into a no-op.
+_MILESTONE_UNSET_ID = 0
+
 
 class TicketUpdater:
     """Updates GitLab issues, MRs, epics, and milestones using the glab CLI."""
@@ -617,10 +624,10 @@ class TicketUpdater:
         self._loader._run_glab_command(["api", "-X", "DELETE", f"{links_endpoint}/{link_id}"])
         print(f"✓ Removed link between issue #{iid} and #{target_iid}")
 
-    def update_issue(  # pylint: disable=too-many-locals,too-many-branches,too-many-arguments
-        # Weight and status each add one more argument and one more branch,
-        # pushing the counts above the default pylint thresholds. Extracting a
-        # helper would obscure the single-method read-then-update flow.
+    def update_issue(  # pylint: disable=too-many-locals,too-many-branches,too-many-arguments,too-many-statements
+        # Weight, status and milestone clearing each add one more argument and one
+        # more branch, pushing the counts above the default pylint thresholds.
+        # Extracting a helper would obscure the single-method read-then-update flow.
         self,
         issue_ref: str,
         *,
@@ -630,6 +637,7 @@ class TicketUpdater:
         labels_remove: Optional[List[str]] = None,
         assignee: Optional[str] = None,
         milestone: Optional[str] = None,
+        clear_milestone: bool = False,
         state_event: Optional[str] = None,
         epic: Optional[str] = None,
         weight: Optional[int] = None,
@@ -646,6 +654,9 @@ class TicketUpdater:
             labels_remove: Labels to remove from the current set.
             assignee: Assignee username to set, or None to leave unchanged.
             milestone: Milestone title or iid to set, or None to leave unchanged.
+            clear_milestone: True to remove the issue's milestone. Mutually exclusive
+                with ``milestone``; giving both raises ValueError below, and the CLI
+                rejects the combination before it reaches here.
             state_event: 'close' or 'reopen', or None to leave unchanged.
             epic: Epic reference to assign the issue to (e.g. &47), or None to skip.
             weight: Story-point weight (non-negative integer), or None to leave unchanged.
@@ -661,10 +672,17 @@ class TicketUpdater:
             PlatformError: If the update fails, or — for status — the project or
                 issue cannot be resolved or the work item's type has no Status
                 widget. Raised before any write.
-            ValueError: If the issue reference cannot be parsed, if status does not
-                match an allowed status for the work item's type, or if the project
-                cannot be determined for a bare reference. Raised before any write.
+            ValueError: If the issue reference cannot be parsed, if both milestone
+                and clear_milestone are given, if status does not match an allowed
+                status for the work item's type, or if the project cannot be
+                determined for a bare reference. Raised before any write.
         """
+        # Enforced here, not only at the CLI: this class is importable and callable
+        # directly. Setting and clearing in one call has no sane resolution, and
+        # letting one win would discard the other without saying so.
+        if milestone is not None and clear_milestone:
+            raise ValueError("milestone and clear_milestone are mutually exclusive")
+
         self._validate_labels_add(labels_add)
 
         # pylint: disable=protected-access
@@ -707,6 +725,7 @@ class TicketUpdater:
                 labels_remove,
                 assignee,
                 milestone,
+                clear_milestone,
                 weight,
                 due_date,
             ]
@@ -721,6 +740,8 @@ class TicketUpdater:
                     fields["assignee_ids"] = f"<resolve user: {assignee}>"
                 if milestone is not None:
                     fields["milestone_id"] = f"<resolve milestone: {milestone}>"
+                if clear_milestone:
+                    fields["milestone_id"] = _MILESTONE_UNSET_ID
                 print(f"[DRY RUN] Would PUT {endpoint} with fields: {fields}")
             if epic is not None:
                 print(f"[DRY RUN] Would assign issue #{iid} to epic &{epic.lstrip('&')}")
@@ -744,6 +765,8 @@ class TicketUpdater:
                 fields["assignee_ids"] = self._resolve_user_id(assignee)
             if milestone is not None:
                 fields["milestone_id"] = self._resolve_milestone_id(milestone, project_path)
+            if clear_milestone:
+                fields["milestone_id"] = _MILESTONE_UNSET_ID
 
             # pylint: disable=protected-access
             # TicketLoader's _run_glab_command is an internal helper shared between

@@ -647,6 +647,13 @@ def _cmd_update_github(args, config) -> int:
         logger.error("--status (work-item Status field) is not supported on GitHub")
         return 1
 
+    # Rejected rather than ignored: `gh issue edit` has no milestone-clear flag, so
+    # GithubUpdater cannot honour this. Falling through would make the flag a no-op
+    # that still prints "✓ Updated issue" — a success line over an unchanged issue.
+    if getattr(args, "no_milestone", False):
+        logger.error("--no-milestone (clear milestone) is not supported on GitHub")
+        return 1
+
     updater = GithubUpdater(config=config, dry_run=args.dry_run)
 
     try:
@@ -731,6 +738,17 @@ def cmd_update(args) -> int:  # pylint: disable=too-many-statements
         if resource_type != "issue" and args.epic:
             logger.error("--epic is only valid for issue resources")
             return 1
+        if resource_type != "issue" and getattr(args, "no_milestone", False):
+            logger.error("--no-milestone is only valid for issue resources")
+            return 1
+        # Both given is a contradiction, not a precedence question — refuse rather than
+        # pick a winner, since either guess silently discards what the caller asked for.
+        # Checked by hand rather than via add_mutually_exclusive_group (used for
+        # pipeline-debug's --job-id/--job-name) to keep `update`'s uniform exit-1
+        # contract: argparse would exit 2 with a usage dump instead.
+        if getattr(args, "no_milestone", False) and args.milestone:
+            logger.error("--milestone and --no-milestone are mutually exclusive")
+            return 1
         if resource_type != "issue" and getattr(args, "weight", None) is not None:
             logger.error("--weight is only valid for issue resources")
             return 1
@@ -759,6 +777,7 @@ def cmd_update(args) -> int:  # pylint: disable=too-many-statements
                     args.remove_label,
                     args.assignee,
                     args.milestone,
+                    getattr(args, "no_milestone", False),
                     args.state,
                     args.epic,
                     args.due_date,
@@ -819,6 +838,7 @@ def cmd_update(args) -> int:  # pylint: disable=too-many-statements
                     args.remove_label,
                     args.assignee,
                     args.milestone,
+                    getattr(args, "no_milestone", False),
                     args.state,
                     args.epic,
                     args.due_date,
@@ -836,6 +856,7 @@ def cmd_update(args) -> int:  # pylint: disable=too-many-statements
                     labels_remove=args.remove_label,
                     assignee=args.assignee,
                     milestone=args.milestone,
+                    clear_milestone=getattr(args, "no_milestone", False),
                     state_event=args.state,
                     epic=args.epic,
                     weight=getattr(args, "weight", None),
@@ -1163,6 +1184,11 @@ Examples:
     p.add_argument("--assignee", type=str, help="Assignee username (issue and MR only)")
     p.add_argument("--reviewer", type=str, help="Reviewer username (MR only)")
     p.add_argument("--milestone", type=str, help="Milestone title or iid (issue, MR, and epic)")
+    p.add_argument(
+        "--no-milestone",
+        action="store_true",
+        help="Clear the milestone, leaving none (issue only)",
+    )
     p.add_argument("--target-branch", type=str, help="Target branch (MR only)")
     p.add_argument(
         "--due-date", type=str, metavar="YYYY-MM-DD", help="Due date (issue and milestone only)"

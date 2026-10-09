@@ -380,6 +380,9 @@ projctl update issue 231 --assignee alice
 # Set milestone (title or iid auto-resolved to numeric ID)
 projctl update issue 231 --milestone "v2.0"
 
+# Clear the milestone, leaving none (issue only)
+projctl update issue 231 --no-milestone
+
 # Assign issue to an epic
 projctl update issue 231 --epic "&47"
 
@@ -428,6 +431,7 @@ projctl update mr https://gitlab.com/group/repo/-/merge_requests/144 ...
 | `--assignee USERNAME` | issue, mr | Username; auto-resolved to numeric user ID |
 | `--reviewer USERNAME` | mr only | Username; auto-resolved to numeric user ID |
 | `--milestone TITLE_OR_IID` | issue, mr, epic | Title or iid; auto-resolved to numeric milestone ID |
+| `--no-milestone` | issue only | Clear the milestone. Mutually exclusive with `--milestone`; not supported on GitHub |
 | `--target-branch BRANCH` | mr only | Change MR target branch |
 | `--due-date YYYY-MM-DD` | issue, milestone | Set due date |
 | `--epic REF` | issue only | Assign issue to epic (e.g. `&47`) |
@@ -449,6 +453,8 @@ projctl update mr https://gitlab.com/group/repo/-/merge_requests/144 ...
 **Key behaviors:**
 - `--assignee` / `--reviewer` accept GitLab usernames and are resolved to numeric IDs via `glab api users?username=<name>`.
 - `--milestone` accepts a milestone title or iid and is resolved to the numeric database ID via the milestones API.
+- `--no-milestone` sends `milestone_id=0`. GitLab's issues PUT documents both `0` and an empty value as unsetting a milestone; `0` is used because it is explicit in the emitted `glab api -f milestone_id=...` form field. The sibling `milestone` attribute assigns by title and is mutually exclusive with `milestone_id`, but offers no clear form of its own. Clearing resolves no title, so it makes no milestones-API lookup. Passing it together with `--milestone` is refused rather than resolved by precedence, since either choice would silently discard what the caller asked for — and the refusal lives in `TicketUpdater.update_issue` as well as the CLI, because the handler is importable and callable directly.
+- `--no-milestone` covers issues only, and the two exclusions are decisions rather than oversights. Epics: their milestone goes through the GraphQL `milestoneWidget` (see `_set_epic_milestone_via_graphql`), so clearing one needs that path and is not implemented. MRs: the MR PUT does accept the same `milestone_id=0` through the same `_build_put_cmd`, so this is a scope choice, not a platform limit — extend `update_mr` the way `update_issue` was extended if it is ever wanted. Not supported on GitHub at all: `gh issue edit` has no milestone-clear flag, so the flag is rejected there rather than silently ignored.
 - `--dry-run` performs zero API calls (label reads are also skipped; intent is shown as `<add: [...], remove: [...]>`). Two partial exceptions: `--remove-blocker` must read the issue's current links to look up the internal link ID, so dry-run performs one GET; and `--status` performs its read-only GraphQL resolution, since that resolution is also what validates the status name — only the `workItemUpdate` mutation is skipped.
 - `--add-blocker` / `--remove-blocker` accept a plain number, `#N`, or a full issue URL and both target an issue in the same project. Adding a link uses `link_type=is_blocked_by`. Removing a link raises an error if no link matching the target exists.
 - `--status` resolves the allowed status names live via GraphQL (`workItemTypes { ... allowedStatuses }`) rather than a hardcoded table, so a project or group with a custom status lifecycle (GitLab Ultimate) is matched correctly. Matching uses Unicode case folding, so `"STRASSE"` matches a `"Straße"` status. An unknown name lists the valid names and exits non-zero.

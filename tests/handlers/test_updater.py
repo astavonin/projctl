@@ -255,6 +255,51 @@ class TestUpdateIssue:
         fields = [put_args[i + 1] for i, a in enumerate(put_args) if a == "-f"]
         assert any("milestone_id=99" in f for f in fields)
 
+    @patch("subprocess.run")
+    def test_update_issue_clear_milestone_sends_zero(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """clear_milestone sends milestone_id=0, which GitLab's issues PUT treats as unset."""
+        put_response = Mock(stdout='{"iid": 231, "title": "T"}', stderr="", returncode=0)
+        mock_run.side_effect = [put_response]
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        updater.update_issue("231", clear_milestone=True)
+
+        # No milestones API lookup: clearing resolves no title, so the PUT is the first call.
+        put_args = mock_run.call_args_list[0][0][0]
+        fields = [put_args[i + 1] for i, a in enumerate(put_args) if a == "-f"]
+        assert any("milestone_id=0" in f for f in fields)
+
+    @patch("subprocess.run")
+    def test_update_issue_clear_milestone_dry_run_makes_no_call(
+        self, mock_run: Mock, new_config_path: Path, capsys
+    ) -> None:
+        """clear_milestone under dry_run prints the intended field and calls no API."""
+        config = Config(new_config_path)
+        updater = TicketUpdater(config, dry_run=True)
+
+        updater.update_issue("231", clear_milestone=True)
+
+        assert mock_run.call_count == 0
+        assert "milestone_id': 0" in capsys.readouterr().out
+
+    @patch("subprocess.run")
+    def test_update_issue_milestone_and_clear_together_raises(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """The handler enforces the exclusion itself — it is importable past the CLI."""
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            updater.update_issue("231", milestone="v2.0", clear_milestone=True)
+
+        # Raised before any write, so neither the lookup nor the PUT went out.
+        assert mock_run.call_count == 0
+
 
     def test_update_issue_invalid_label_raises(self, new_config_path: Path) -> None:
         """labels_add containing a label not in the allowed list raises ValueError."""
@@ -1549,6 +1594,106 @@ class TestCmdUpdateBlockerValidation:
             ]
         )
         assert result == 1
+
+
+# ---------------------------------------------------------------------------
+# cmd_update — --no-milestone CLI validation
+# ---------------------------------------------------------------------------
+
+
+class TestCmdUpdateNoMilestoneValidation:
+    """Tests for cmd_update --no-milestone flag validation."""
+
+    def _run_cli(self, args_list, side_effect=None):
+        """Invoke cli_main with the given argv, optionally mocking subprocess.run."""
+        old_argv = sys.argv
+        try:
+            sys.argv = args_list
+            if side_effect is None:
+                return cli_main()
+            with patch("subprocess.run", side_effect=side_effect):
+                return cli_main()
+        finally:
+            sys.argv = old_argv
+
+    @pytest.mark.parametrize("resource, ref", [("mr", "144"), ("epic", "121"), ("milestone", "10")])
+    def test_no_milestone_rejected_for_non_issue_resources(
+        self, new_config_path: Path, caplog, resource: str, ref: str
+    ) -> None:
+        """--no-milestone is rejected on every non-issue resource.
+
+        The message, not the exit code: `no_milestone` is absent from every
+        non-issue `has_update` list, so `cmd_update` returns 1 for this argv anyway
+        via the pre-existing "No fields to update" branch. Asserting only the code
+        leaves the guard deletable with the suite green.
+        """
+        with caplog.at_level("ERROR"):
+            result = self._run_cli(
+                [
+                    "projctl", "--config", str(new_config_path),
+                    "update", resource, ref, "--no-milestone",
+                ]
+            )
+        assert result == 1
+        assert "--no-milestone is only valid for issue resources" in caplog.text
+
+    def test_no_milestone_and_milestone_together_rejected(
+        self, new_config_path: Path, caplog
+    ) -> None:
+        """Both flags given is a contradiction; neither is silently preferred.
+
+        Asserts the message because without the guard this argv still exits 1 — it
+        reaches update_issue, whose own exclusion check raises ValueError. Only the
+        message distinguishes the CLI guard from the handler's backstop.
+        """
+        with caplog.at_level("ERROR"):
+            result = self._run_cli(
+                [
+                    "projctl", "--config", str(new_config_path),
+                    "update", "issue", "231", "--milestone", "v2.0", "--no-milestone",
+                ]
+            )
+        assert result == 1
+        assert "--milestone and --no-milestone are mutually exclusive" in caplog.text
+
+    def test_no_milestone_alone_reaches_the_handler(self, new_config_path: Path, capsys) -> None:
+        """--no-milestone alone is a field, and must survive to the PUT.
+
+        Asserts the emitted field, not just exit 0: the flag is threaded through two
+        independent lists in `cmd_update` (`has_update` and `non_link_update`), and
+        dropping it from the second makes the flag a silent no-op at exit 0.
+        """
+        result = self._run_cli(
+            [
+                "projctl", "--config", str(new_config_path),
+                "update", "issue", "231", "--no-milestone", "--dry-run",
+            ]
+        )
+        assert result == 0
+        out = capsys.readouterr().out
+        assert "Would PUT" in out
+        assert "'milestone_id': 0" in out
+
+    def test_no_milestone_rejected_on_github_platform(self, tmp_path: Path, caplog) -> None:
+        """`gh issue edit` cannot clear a milestone, so the flag must not exit 0.
+
+        Falling through printed "✓ Updated issue 231" for an operation that made no
+        gh call at all — a success line over an unchanged issue.
+        """
+        cfg_path = tmp_path / "github_config.yaml"
+        cfg_path.write_text("platform: github\ngithub:\n  repo: owner/repo\n")
+
+        with caplog.at_level("ERROR"):
+            with patch("projctl.handlers.github_updater.run_gh_command") as mock_gh:
+                result = self._run_cli(
+                    [
+                        "projctl", "--config", str(cfg_path),
+                        "update", "issue", "231", "--no-milestone",
+                    ]
+                )
+        assert result == 1
+        assert "--no-milestone (clear milestone) is not supported on GitHub" in caplog.text
+        assert mock_gh.call_count == 0
 
 
 # ---------------------------------------------------------------------------

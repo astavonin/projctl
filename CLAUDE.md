@@ -377,6 +377,9 @@ projctl update issue 231 --assignee alice
 # Set milestone (title or iid — resolved to numeric ID automatically)
 projctl update issue 231 --milestone "v2.0"
 
+# Clear the milestone, leaving none (issue only)
+projctl update issue 231 --no-milestone
+
 # Manage 'blocked by' links (add or remove a blocker issue)
 projctl update issue 376 --add-blocker 385
 projctl update issue 376 --remove-blocker 252
@@ -421,6 +424,7 @@ projctl update mr https://gitlab.com/group/repo/-/merge_requests/144 ...  # full
 | `--assignee USERNAME` | issue, mr | Assignee username (auto-resolved to numeric ID) |
 | `--reviewer USERNAME` | mr only | Reviewer username (auto-resolved to numeric ID) |
 | `--milestone TITLE_OR_IID` | issue, mr | Milestone by title or iid (auto-resolved to numeric ID) |
+| `--no-milestone` | issue only | Clear the milestone. Mutually exclusive with `--milestone`; not supported on GitHub |
 | `--target-branch BRANCH` | mr only | Change MR target branch |
 | `--due-date YYYY-MM-DD` | issue, milestone | Set due date |
 | `--add-blocker ISSUE` | issue only | Add "is blocked by" link to ISSUE (e.g. `252` or `#252`) |
@@ -440,6 +444,7 @@ projctl update mr https://gitlab.com/group/repo/-/merge_requests/144 ...  # full
 **Behavior notes:**
 - `--assignee` and `--reviewer` accept GitLab usernames; the tool resolves them to numeric user IDs before sending the API request.
 - `--milestone` accepts a milestone title (e.g. `"v2.0"`) or iid (e.g. `"5"`); resolved to the numeric database ID automatically.
+- `--no-milestone` sends `milestone_id=0`, which GitLab's issues PUT treats as "unset". It resolves no title, so it makes no milestones-API lookup. Giving it together with `--milestone` is refused rather than resolved by precedence, at both the CLI and `TicketUpdater.update_issue`. Issues only — see `projctl/CLAUDE.md` for why epics and MRs are excluded.
 - `--dry-run` is fully safe: no API calls are made, not even the read needed for label merging. Label intent is shown as `<add: [...], remove: [...]>`. **Exception:** `--status` still performs its read-only GraphQL resolution (work-item GID + allowed-status lookup) under `--dry-run`, since that resolution is also what validates the status name; only the `workItemUpdate` mutation itself is skipped.
 - `--status` resolves the allowed status names live via GraphQL (`workItemTypes { ... allowedStatuses }`) rather than a hardcoded table, so a project/group with a custom status lifecycle (GitLab Ultimate) is matched correctly. Matching uses Unicode case folding. An unknown name lists the valid names and exits non-zero.
 - `--status` validates against the work item's **own** type — Tasks share the issue iid namespace and have a different status lifecycle — and is resolved **before any write**, so `--title X --status typo` writes nothing. An empty or whitespace-only value is rejected by name.
