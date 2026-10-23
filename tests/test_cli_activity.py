@@ -466,13 +466,445 @@ class TestScanPlanningTree:
         assert issue_counts == {}
         assert mr_counts == {}
 
-    def test_reviews_orphan_directory_does_not_match_the_mr_pattern(self, tmp_path: Path) -> None:
-        """'reviews-orphan/' (hand-managed reviews for unlinked work, per the
-        planning-structure convention) must not be mistaken for 'reviews/' —
-        the MR pattern requires the exact directory name, not a prefix of it."""
+    def test_reviews_orphan_directory_is_not_read_as_an_issue(self, tmp_path: Path) -> None:
+        """Pins the `reviews-orphan` member of `_PLANNING_NON_ISSUE_DIRS`:
+        without it, '51-ab-fallback-fix' would match the 2-layer component
+        pattern and be read as issue 51."""
         orphan_dir = tmp_path / "planning" / "reviews-orphan" / "51-ab-fallback-fix"
         orphan_dir.mkdir(parents=True)
         target = orphan_dir / "observed-failures.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {}
+        assert mr_counts == {}
+
+    def test_reviews_orphan_directory_does_not_match_the_mr_pattern(self, tmp_path: Path) -> None:
+        """'reviews-orphan/' (hand-managed reviews for unlinked work, per the
+        planning-structure convention) must not be mistaken for 'reviews/' —
+        the MR pattern requires the exact directory name, not a prefix of
+        it. The fixture places the MR-shaped filename directly inside
+        'reviews-orphan/' so a relaxed 'reviews[^/]*/' pattern would actually
+        claim it; a filename that isn't MR-shaped at all could never
+        exercise this collision regardless of how the directory match is
+        written.
+        """
+        orphan_dir = tmp_path / "planning" / "reviews-orphan"
+        orphan_dir.mkdir(parents=True)
+        target = orphan_dir / "MR5-review.yaml"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {}
+        assert mr_counts == {}
+
+    def test_two_layer_issue_folder_is_counted(self, tmp_path: Path) -> None:
+        """planning/<goal>/<N>-<slug>/ is the 2-layer shape. A repo using it
+        was reporting no planning evidence at all, so a day of design and
+        review work on an issue showed up only as whatever its branch or a
+        single commit happened to prove."""
+        issue_dir = tmp_path / "planning" / "platform-resilience" / "70-hil-device-versions"
+        issue_dir.mkdir(parents=True)
+        target = issue_dir / "observed-failures.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {70: 1}
+        assert mr_counts == {}
+
+    def test_two_layer_issue_folder_strips_leading_zeros(self, tmp_path: Path) -> None:
+        issue_dir = tmp_path / "planning" / "goal" / "054-yocto-setup"
+        issue_dir.mkdir(parents=True)
+        target = issue_dir / "design.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, _mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {54: 1}
+
+    def test_two_layer_files_sum_into_one_count(self, tmp_path: Path) -> None:
+        issue_dir = tmp_path / "planning" / "goal" / "70-thing"
+        issue_dir.mkdir(parents=True)
+        for name in ("design.md", "observed-failures.md", "code-review.md"):
+            target = issue_dir / name
+            target.write_text("x")
+            _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, _mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {70: 3}
+
+    @pytest.mark.parametrize(
+        "slug, expected",
+        [
+            ("1-first-issue", {1: 1}),
+            ("7-alpha", {7: 1}),
+            ("999999-thing", {999999: 1}),
+            ("1234567-thing", {}),
+            ("20261012-notes", {}),
+        ],
+    )
+    def test_flat_issue_id_digit_cap_bounds_the_component(
+        self, tmp_path: Path, slug: str, expected: dict
+    ) -> None:
+        """The component pattern's `{1,6}` digit cap accepts a single-digit
+        issue id and a 6-digit one, rejects a 7-digit one, and incidentally
+        is the sole barrier against a compact date folder —
+        '20261012-notes' has no hyphen for the date guard to anchor on, so
+        only the cap stops it from being read as issue 20261012.
+        '1-first-issue' pins the zero floor's adjacent value from above,
+        complementing test_zero_prefixed_component_is_not_read_as_an_issue
+        below, which pins it from below."""
+        issue_dir = tmp_path / "planning" / "goal" / slug
+        issue_dir.mkdir(parents=True)
+        target = issue_dir / "notes.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, _mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == expected
+
+    def test_zero_prefixed_component_is_not_read_as_an_issue(self, tmp_path: Path) -> None:
+        """GitLab iids are 1-based, so '0-triage' is not a real issue folder —
+        attributing issue 0 would invent a ticket that cannot exist."""
+        issue_dir = tmp_path / "planning" / "goal" / "0-triage"
+        issue_dir.mkdir(parents=True)
+        target = issue_dir / "notes.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {}
+        assert mr_counts == {}
+
+    def test_zero_id_three_layer_issue_folder_is_not_read_as_an_issue(self, tmp_path: Path) -> None:
+        """The zero floor is a validity check (GitLab iids are 1-based), not
+        a disambiguation guard, so unlike the date guard and digit cap it
+        also applies to the 3-layer issues/<N>-<slug>/ shape — '0-triage'
+        there is no more a real issue folder than it is in the 2-layer
+        shape above."""
+        issue_dir = tmp_path / "planning" / "epic" / "milestone-01" / "issues" / "0-triage"
+        issue_dir.mkdir(parents=True)
+        target = issue_dir / "notes.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {}
+        assert mr_counts == {}
+
+    def test_issue_one_in_a_three_layer_issue_folder_is_counted(self, tmp_path: Path) -> None:
+        """Pins the 3-layer floor's inclusive side: issue #1 exists in every
+        project, so the floor must reject 0 without rejecting 1. Without this
+        the floor is pinned from one direction only and tightening it to
+        `>= 2` drops #1 with the suite green — the same one-sided gap the
+        2-layer floor had before its own adjacent-value case was added."""
+        issue_dir = tmp_path / "planning" / "epic" / "milestone-01" / "issues" / "1-first-issue"
+        issue_dir.mkdir(parents=True)
+        target = issue_dir / "notes.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {1: 1}
+        assert mr_counts == {}
+
+    @pytest.mark.parametrize(
+        "slug, expected",
+        [
+            ("2026-10-bit-color", {2026: 1}),
+            ("1234567-thing", {1234567: 1}),
+        ],
+    )
+    def test_three_layer_shape_does_not_apply_the_two_layer_disambiguation_guards(
+        self, tmp_path: Path, slug: str, expected: dict
+    ) -> None:
+        """These two pass BY DECISION, and this test exists so that decision
+        fails a build rather than living only in a comment.
+
+        The date guard and the digit cap are disambiguation guards: they answer
+        "is this component an id or a date?", a question that only arises where
+        issue-folder-ness must be inferred from the component alone. The
+        literal 'issues/' segment is an explicit declaration, so there is
+        nothing to disambiguate under it — and extending those two guards there
+        would stop both of these real issue folders being attributed. (The zero
+        floor is different: it is a validity check, iids being 1-based, so it
+        does apply to both shapes — see the two zero-id tests above.)
+
+        If this test fails, someone extended a disambiguation guard into a
+        branch that needs none; the fix is to revert that, not to change these
+        expectations."""
+        issue_dir = tmp_path / "planning" / "epic" / "milestone-01" / "issues" / slug
+        issue_dir.mkdir(parents=True)
+        target = issue_dir / "notes.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == expected
+        assert mr_counts == {}
+
+    @pytest.mark.parametrize("slug", ["2026", "70"])
+    def test_bare_digit_component_without_a_slug_is_not_read_as_an_issue(
+        self, tmp_path: Path, slug: str
+    ) -> None:
+        """`_FLAT_ISSUE_COMPONENT_RE` requires a '-<slug>' suffix after the
+        digits; a bare numeric folder name carries no suffix at all and must
+        not be read as a 2-layer issue folder."""
+        issue_dir = tmp_path / "planning" / "goal" / slug
+        issue_dir.mkdir(parents=True)
+        target = issue_dir / "notes.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {}
+        assert mr_counts == {}
+
+    def test_milestone_directory_is_not_read_as_an_issue(self, tmp_path: Path) -> None:
+        """'milestone-01-pipeline-budgets' carries digits but is not an issue
+        folder. Reading one as issue #1 would invent a ticket and log hours
+        against it."""
+        milestone_dir = tmp_path / "planning" / "goal" / "milestone-01-pipeline-budgets"
+        milestone_dir.mkdir(parents=True)
+        target = milestone_dir / "status.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {}
+        assert mr_counts == {}
+
+    def test_step_folder_is_not_read_as_an_issue(self, tmp_path: Path) -> None:
+        """In planning/<goal>/<work-slug>/<step>/ the third component is a step
+        of a multi-step effort, not an issue — only one component deep inside
+        the goal is eligible."""
+        step_dir = tmp_path / "planning" / "goal" / "rollout" / "2-second-step"
+        step_dir.mkdir(parents=True)
+        target = step_dir / "design.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {}
+        assert mr_counts == {}
+
+    def test_date_named_folder_is_not_read_as_an_issue(self, tmp_path: Path) -> None:
+        """A folder named for a date would otherwise read as issue 2026."""
+        dated_dir = tmp_path / "planning" / "goal" / "2026-10-12-incident"
+        dated_dir.mkdir(parents=True)
+        target = dated_dir / "notes.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {}
+        assert mr_counts == {}
+
+    @pytest.mark.parametrize(
+        "slug",
+        [
+            "2026-10-sprint-notes",
+            "2026-1-5-incident",
+            "2026-10",
+            "2026-10-12",
+            "2026-03-14-incident",
+            "2026-09-30-postmortem",
+            "2026-12-01-retro",
+            "1999-11-20-incident",
+        ],
+    )
+    def test_month_or_unpadded_date_named_folder_is_not_read_as_an_issue(
+        self, tmp_path: Path, slug: str
+    ) -> None:
+        """A year-month folder ('2026-10-sprint-notes'), the unpadded
+        calendar spelling ('2026-1-5-incident'), and the bare slugless forms
+        ('2026-10', '2026-10-12') all collide with issue 2026 the same way a
+        full YYYY-MM-DD folder does, so the date guard must reject all of
+        them, not only the zero-padded, slugged form. The bare forms in
+        particular pin the regex's `$` alternative — dropping it leaves every
+        slugged fixture passing through the `[^0-9]` branch instead.
+        '2026-03-14-incident' and '2026-09-30-postmortem' pin the
+        zero-padded single-digit month spelling specifically — every other
+        fixture here uses month '10' or the unpadded '1', so dropping the
+        `0?` from the month alternation would leave this exact ISO-dated
+        folder shape unguarded. '2026-12-01-retro' and '1999-11-20-incident'
+        pin the other two halves of the documented range: narrowing the month
+        alternation below 12, or dropping the `19` from the year, leaves each
+        of those folders reading as issue 2026 and 1999 respectively."""
+        dated_dir = tmp_path / "planning" / "goal" / slug
+        dated_dir.mkdir(parents=True)
+        target = dated_dir / "notes.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {}
+        assert mr_counts == {}
+
+    @pytest.mark.parametrize(
+        "slug, expected",
+        [
+            ("1234-2fa-support", {1234: 1}),
+            ("4821-3-way-merge", {4821: 1}),
+            ("2048-10-bit-color", {}),
+            ("2026-13-inch-display", {2026: 1}),
+        ],
+    )
+    def test_date_guard_does_not_over_reject_an_issue_id_with_a_numeric_slug_opening(
+        self, tmp_path: Path, slug: str, expected: dict
+    ) -> None:
+        """A 4-digit issue id followed by a 1-2 digit slug token ('2fa',
+        '3-way') must not read as a year-month date — an optional day group
+        once made a bare second numeric component enough to reject it.
+
+        '2048-10-bit-color' is the documented, irreducible exception: it is
+        structurally identical to '2026-10-sprint-notes', which must stay
+        rejected, so no rule keyed on the component's own text can tell the
+        two apart.
+
+        '2026-13-inch-display' pins the month alternation's upper bound:
+        '13' is not a valid month, so a real issue id in 1900-2099 whose
+        slug opens with a 13-99 token must still be attributed. Every other
+        fixture here has a year outside 1900-2099, so this is the only case
+        that depends on the upper bound alone.
+        """
+        issue_dir = tmp_path / "planning" / "goal" / slug
+        issue_dir.mkdir(parents=True)
+        target = issue_dir / "notes.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, _mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == expected
+
+    def test_tickets_directory_is_not_read_as_an_issue(self, tmp_path: Path) -> None:
+        tickets_dir = tmp_path / "planning" / "tickets" / "70-draft"
+        tickets_dir.mkdir(parents=True)
+        target = tickets_dir / "tickets.yaml"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {}
+        assert mr_counts == {}
+
+    def test_file_under_the_legacy_top_level_reviews_directory_is_not_read_as_an_issue(
+        self, tmp_path: Path
+    ) -> None:
+        """planning/reviews/... is the legacy top-level MR-review folder the
+        old-format migration leaves on disk. A stray non-YAML file directly
+        under it must not be claimed as an issue — even though its own
+        slug component ('70-foo') would match the 2-layer pattern on its
+        own, which is what makes this fixture able to fail."""
+        reviews_dir = tmp_path / "planning" / "reviews" / "70-foo"
+        reviews_dir.mkdir(parents=True)
+        target = reviews_dir / "notes.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {}
+        assert mr_counts == {}
+
+    def test_file_under_a_reviews_subdirectory_of_a_two_layer_issue_folder_is_counted(
+        self, tmp_path: Path
+    ) -> None:
+        """A legacy reviews/ subdirectory left inside a 2-layer issue folder
+        (the planning convention explicitly leaves these in place) must
+        still count as evidence for that issue — the non-issue-directory
+        guard excludes planning/reviews/ at the top level, not every
+        directory named 'reviews' anywhere deeper in the tree."""
+        reviews_dir = tmp_path / "planning" / "goal" / "70-thing" / "reviews"
+        reviews_dir.mkdir(parents=True)
+        target = reviews_dir / "notes.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, _mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {70: 1}
+
+    def test_three_layer_shape_still_wins_and_is_not_double_counted(self, tmp_path: Path) -> None:
+        """A 3-layer path also has a numeric component one deep inside the
+        goal in some trees; the matchers must not both fire on one file."""
+        issue_dir = (
+            tmp_path / "planning" / "goal" / "99-epicish" / "milestone-01" / "issues" / "42-real"
+        )
+        issue_dir.mkdir(parents=True)
+        target = issue_dir / "design.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, _mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {42: 1}
+
+    def test_file_directly_in_the_goal_folder_yields_nothing(self, tmp_path: Path) -> None:
+        """planning/<goal>/<file> has no issue-folder component at all —
+        the depth guard must reject it before the component regex gets a
+        chance to, so the fixture's own basename ('70-overview.md') is
+        chosen to match the 2-layer pattern if the depth guard slipped."""
+        goal_dir = tmp_path / "planning" / "goal"
+        goal_dir.mkdir(parents=True)
+        target = goal_dir / "70-overview.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {}
+        assert mr_counts == {}
+
+    def test_progress_md_at_the_planning_root_yields_nothing(self, tmp_path: Path) -> None:
+        """planning/progress.md is the most frequently touched file in
+        every tree following this convention, and the 2-component path
+        (planning/<file>, with no goal folder at all) had no test of its
+        own — it must not raise and must attribute nothing."""
+        planning_dir = tmp_path / "planning"
+        planning_dir.mkdir(parents=True)
+        target = planning_dir / "progress.md"
         target.write_text("x")
         _set_mtime(target, _TARGET_DAY)
 
@@ -494,6 +926,27 @@ class TestScanPlanningTree:
 
         assert issue_counts == {}
         assert mr_counts == {121: 1}
+
+    def test_mr_review_yaml_inside_a_two_layer_issue_folder_is_not_also_counted_as_the_issue(
+        self, tmp_path: Path
+    ) -> None:
+        """reviews/MR<N>-review.yaml is claimed by the MR matcher first and
+        the branch must stop there — without the `continue` after it, this
+        file would also fall through to the 2-layer matcher and be double
+        counted as issue 70, since 'reviews' only guards the top-level
+        planning/reviews/ shape, not a reviews/ subdirectory one level
+        inside an issue folder."""
+        reviews_dir = tmp_path / "planning" / "goal" / "70-epic" / "reviews"
+        reviews_dir.mkdir(parents=True)
+        target = reviews_dir / "MR5-review.yaml"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {}
+        assert mr_counts == {5: 1}
 
     def test_multiple_files_in_the_same_issue_folder_sum_into_one_count(
         self, tmp_path: Path

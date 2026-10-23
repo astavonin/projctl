@@ -1741,8 +1741,15 @@ sources, each reported when it fires (an issue can show up more than
 once): the reflog ('commit:'/'commit (amend):' entries carrying
 'Ref #<N>'); files modified on the date on a branch named
 '<type>/<N>-<slug>' (only consulted when the reflog attributes no
-issue); files under planning/**/issues/<N>-<slug>/ modified on the
-date; and planning/**/reviews/MR<N>-review.yaml modified on the date.
+issue); files under an issue folder modified on the date, in either
+the 3-layer planning/**/issues/<N>-<slug>/ or the single-issue 2-layer
+planning/<goal>/<N>-<slug>/ shape — attribution keys on the component
+directly inside the goal folder, so a step folder one level deeper is
+never read as an issue; and planning/**/reviews/MR<N>-review.yaml
+modified on the date.
+
+--verbose is a top-level flag, not an 'activity' option: use
+'projctl --verbose activity', not 'projctl activity --verbose'.
         """,
     )
     p.add_argument(

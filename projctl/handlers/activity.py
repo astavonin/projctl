@@ -50,6 +50,74 @@ _ISSUE_FOLDER_RE = re.compile(r"(?:^|/)issues/(\d+)-[^/]+/")
 # reviews for unlinked work — from matching.
 _MR_REVIEW_FILE_RE = re.compile(r"(?:^|/)reviews/MR(\d+)-review\.yaml$")
 
+# planning/<goal>/<N>-<slug>/... — the single-issue 2-layer planning shape,
+# where the issue folder sits directly under the goal with no
+# "milestone-XX/issues/" between them. Three planning shapes are sanctioned;
+# this one and the 3-layer shape are issue folders and are covered here,
+# while the third — the multi-step planning/<goal>/<work-slug>/<step-or-issue-name>/
+# — deliberately is not (see _flat_issue_id). A repo on this single-issue
+# shape was reporting no planning evidence at all: every design doc, review
+# report and ledger written there was invisible, so an issue worked on for
+# a full day showed up with whatever its branch or a single commit happened
+# to prove.
+#
+# Matched one path component at a time rather than as a path pattern, because
+# the position matters — see _flat_issue_id for which component is eligible
+# and why the surrounding directories are not.
+#
+# The `\d{1,6}` cap is this matcher's own load-bearing barrier against a
+# *compact* (unhyphenated) date folder — "20261012-notes" has no hyphen for
+# _DATE_PREFIXED_COMPONENT_RE below to anchor on, so the cap rejecting an
+# 8-digit prefix outright is the only thing stopping that shape from being
+# read as an eight-digit issue id. Do not widen or remove it without first
+# replacing that barrier.
+_FLAT_ISSUE_COMPONENT_RE = re.compile(r"^(\d{1,6})-[^/]+$")
+
+# A folder named for a date would otherwise read as issue 2026. This guard
+# covers YYYY-MM in both the zero-padded and unpadded spellings
+# ("2026-10-12-incident", "2026-1-5-incident", bare "2026-10" and
+# "2026-10-12") — a year restricted to 1900-2099 and a month restricted to
+# 01-12, padded or not. There is no separate day group: `[^0-9]` after the
+# month already rejects anything the month alternation didn't consume,
+# including the "-12" of a full YYYY-MM-DD, so a day group would decide
+# nothing a day could not already decide via that same trailing branch.
+#
+# The residual collision is irreducible, not an oversight: an issue id in
+# 1900-2099 whose slug opens with a 1-12 token — e.g. "2048-10-bit-color" —
+# still reads as a date, because it is structurally identical to
+# "2026-10-sprint-notes", which must stay rejected. No rule keyed on the
+# component's own text can tell the two apart. A second numeric component
+# alone, with no third, already triggers this guard — see the bare
+# "2026-10" case above.
+#
+# This only catches the *hyphenated* date spelling. A compact one
+# ("20261012-notes") has no hyphen for this pattern to anchor on at all —
+# the sole barrier against that shape is _FLAT_ISSUE_COMPONENT_RE's
+# `\d{1,6}` cap above (see that constant's own comment), which rejects an
+# 8-digit numeric prefix outright. Do not widen or remove that cap without
+# first replacing this barrier, or a compact-date folder is read as an
+# eight-digit issue id.
+_DATE_PREFIXED_COMPONENT_RE = re.compile(r"^(?:19|20)\d{2}-(?:0?[1-9]|1[0-2])(?:$|[^0-9])")
+
+# Checked only at parts[1] (the goal-level slot) — the position under
+# planning/ this convention puts a non-issue directory in. A member
+# matching at any deeper position (e.g. a legacy reviews/ subdirectory left
+# inside a 2-layer issue folder, which the planning convention explicitly
+# leaves in place) must not block attribution, or every design doc, review
+# and ledger written under that issue folder goes unattributed — the failure
+# this matcher exists to stop.
+#
+# "reviews" guards parts[1]: planning/reviews/... is the legacy top-level
+# MR-review folder the old-format migration leaves on disk — the planning
+# convention forbids it going forward, but it is still reachable, and
+# _MR_REVIEW_FILE_RE only matches an MR-shaped filename directly inside it,
+# not an arbitrary stray file. "reviews-orphan" guards parts[1] the same
+# way: hand-managed work with no linked issue, whose slug derives from a
+# branch name that may well carry a number belonging to something else.
+# "tickets" guards parts[1] too: planning/tickets/... holds YAML awaiting
+# `projctl create`, never an issue folder.
+_PLANNING_NON_ISSUE_DIRS = frozenset({"reviews", "reviews-orphan", "tickets"})
+
 
 @dataclass(frozen=True)
 class IssueActivity:
@@ -151,8 +219,14 @@ class ActivityHandler:
        the reflog attributes no issue at all — a day's work with no commit
        yet still shows up as modified files, but a stale branch checkout
        with no file changes must contribute nothing.
-    3. planning (_scan_planning_tree) — a file under
-       planning/**/issues/<N>-<slug>/ modified on the date.
+    3. planning (_scan_planning_tree) — a file under an issue folder
+       modified on the date. Three planning shapes are sanctioned; two
+       are covered here — planning/**/issues/<N>-<slug>/ (3-layer) and
+       planning/<goal>/<N>-<slug>/ (single-issue 2-layer). Attribution
+       keys on the component directly inside the goal folder, so a step
+       folder one level deeper — as in the third shape,
+       planning/<goal>/<work-slug>/<step-or-issue-name>/ (multi-step
+       2-layer) — is never read as an issue (see _flat_issue_id).
     4. review (_scan_planning_tree) — a
        planning/**/reviews/MR<N>-review.yaml modified on the date.
 
@@ -368,6 +442,10 @@ class ActivityHandler:
     def _scan_planning_tree(self, target: date) -> Tuple[Dict[int, int], Dict[int, int]]:
         """Scan planning/ for issue-folder and MR-review-yaml files mtimed on `target`.
 
+        Both issue-folder shapes this scanner covers count: the 3-layer
+        planning/**/issues/<N>-<slug>/ and the 2-layer
+        planning/<goal>/<N>-<slug>/ (see _flat_issue_id).
+
         Unlike _scan_working_tree, this walks the filesystem directly
         instead of going through `git status`: a planning doc is often
         committed the same day it is written, so by the time this runs it
@@ -390,16 +468,86 @@ class ActivityHandler:
             if not path.is_file() or not self._mtime_on_date(path, target):
                 continue
             rel_posix = path.relative_to(self._cwd).as_posix()
+            # Matchers run most-specific first: the 3-layer issues/<N>-<slug>/
+            # shape, then the MR-review filename, then the 2-layer bare
+            # <N>-<slug> fallback last. Each `continue` stops a later matcher
+            # from also claiming the same file — a reviews/MR<N>-review.yaml
+            # must be read as an MR and not fall through to the bare-numeric
+            # matcher, and a 3-layer path must not be double-counted by it
+            # either. A new shape goes in before the bare-numeric matcher,
+            # which has to stay last since it is the most permissive.
             issue_match = _ISSUE_FOLDER_RE.search(rel_posix)
             if issue_match:
                 issue_id = int(issue_match.group(1))
-                issue_counts[issue_id] = issue_counts.get(issue_id, 0) + 1
+                # The zero floor is a validity check (GitLab iids are
+                # 1-based, so issue 0 cannot exist), which holds wherever an
+                # id is read — unlike the date guard and digit cap in
+                # _flat_issue_id below, which are disambiguation guards
+                # answering "is this component an id or a date?". That
+                # question only arises where issue-folder-ness must be
+                # inferred from a bare number; the "issues/" segment here is
+                # already an explicit declaration with nothing to
+                # disambiguate, so extending those guards to this branch
+                # would trade a real false negative (issues/2026-10-bit-color/,
+                # issues/1234567-thing/ would stop being attributed) for an
+                # off-convention false positive. Only the floor extends here.
+                if issue_id >= 1:
+                    issue_counts[issue_id] = issue_counts.get(issue_id, 0) + 1
                 continue
             mr_match = _MR_REVIEW_FILE_RE.search(rel_posix)
             if mr_match:
                 mr_id = int(mr_match.group(1))
                 mr_counts[mr_id] = mr_counts.get(mr_id, 0) + 1
+                continue
+            flat_id = self._flat_issue_id(rel_posix)
+            if flat_id is not None:
+                issue_counts[flat_id] = issue_counts.get(flat_id, 0) + 1
+            else:
+                logger.debug("planning file %r matched no issue folder", rel_posix)
         return issue_counts, mr_counts
+
+    @staticmethod
+    def _flat_issue_id(rel_posix: str) -> Optional[int]:
+        """Return the issue id for a 2-layer planning path, or None.
+
+        Eligible position is exactly one component deep inside the goal
+        folder — planning/<goal>/<N>-<slug>/... — which is where the
+        2-layer convention puts an issue folder. Deeper components are not
+        considered: the other sanctioned 2-layer shape,
+        planning/<goal>/<work-slug>/<step-or-issue-name>/, holds either a
+        step folder or an issue folder at that same depth, and a bare
+        <N>-<slug> name there is ambiguous between "step N" and "issue N" —
+        the module's own fixture, planning/goal/rollout/2-second-step, is
+        exactly that ambiguity. No rule keyed on the name alone resolves
+        it, so the chosen response is to attribute nothing there rather
+        than risk a false positive in either direction.
+
+        Args:
+            rel_posix: Path relative to the repository root, forward slashes,
+                beginning with "planning/".
+
+        Returns:
+            The issue id with any zero-padding stripped, or None where the
+            path is not a 2-layer issue folder or the id is below 1.
+        """
+        parts = rel_posix.split("/")
+        # planning / goal / issue-folder / ...at least one file
+        if len(parts) < 4:
+            return None
+        if parts[1] in _PLANNING_NON_ISSUE_DIRS:
+            return None
+        candidate = parts[2]
+        if _DATE_PREFIXED_COMPONENT_RE.match(candidate):
+            return None
+        match = _FLAT_ISSUE_COMPONENT_RE.match(candidate)
+        if not match:
+            return None
+        issue_id = int(match.group(1))
+        # GitLab iids are 1-based, so "0-triage" is not a real issue folder —
+        # attributing issue 0 would invent a ticket that cannot exist. This
+        # is a validity check, not a disambiguation guard, so it is mirrored
+        # in the 3-layer issue_match branch too — see _scan_planning_tree.
+        return issue_id if issue_id >= 1 else None
 
     # ------------------------------------------------------------------
     # Entry point
