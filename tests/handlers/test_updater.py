@@ -29,6 +29,31 @@ def _make_mock_run(stdout: str = "{}") -> Mock:
     return mock
 
 
+def _run_cli(args_list, side_effect=None):
+    """Invoke cli_main with the given argv; return (exit_code, subprocess_mock).
+
+    Two preconditions a caller must satisfy: `args_list[0]` is a
+    program-name placeholder (argparse discards it, mirroring real
+    `sys.argv`), and `side_effect`, when given, is an ordered
+    `subprocess.run` call transcript — one entry consumed per call — not a
+    single return value reused for every call.
+
+    `subprocess.run` is always patched with a `Mock`, even when
+    `side_effect` is None: a guard that is supposed to reject before any
+    API call must not fall through to the real `glab`/`gh` binary if it
+    regresses. Callers that expect no subprocess invocation at all assert
+    the returned mock's `call_count == 0`.
+    """
+    old_argv = sys.argv
+    try:
+        sys.argv = args_list
+        mock_run = Mock(side_effect=side_effect)
+        with patch("subprocess.run", mock_run):
+            return cli_main(), mock_run
+    finally:
+        sys.argv = old_argv
+
+
 # ---------------------------------------------------------------------------
 # Initialisation
 # ---------------------------------------------------------------------------
@@ -133,6 +158,75 @@ class TestUpdateIssue:
         updater.update_issue("478", due_date="2026-08-11")
 
         mock_run.assert_called_once()
+
+    @patch("subprocess.run")
+    def test_update_issue_description_alone_triggers_put(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """A description with no other field still counts as an update.
+
+        description must appear in has_put_fields; omitting it there makes
+        a description-only call silently no-op instead of issuing the PUT.
+        """
+        mock_run.return_value = Mock(stdout='{"iid": 478}', stderr="", returncode=0)
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        updater.update_issue("478", description="New description")
+
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0][0]
+        fields = [args[i + 1] for i, a in enumerate(args) if a == "-f"]
+        assert any("description=New description" in f for f in fields)
+
+    @patch("subprocess.run")
+    def test_update_issue_labels_remove_alone_triggers_put(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """A labels_remove with no other field still counts as an update.
+
+        labels_remove must appear in has_put_fields; omitting it there makes
+        a labels_remove-only call silently no-op instead of issuing the PUT.
+        """
+        get_response = Mock(
+            stdout='{"iid": 231, "labels": ["type::feature", "keep"]}',
+            stderr="",
+            returncode=0,
+        )
+        put_response = Mock(stdout='{"iid": 231}', stderr="", returncode=0)
+        mock_run.side_effect = [get_response, put_response]
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        updater.update_issue("231", labels_remove=["type::feature"])
+
+        assert mock_run.call_count == 2
+        put_args = mock_run.call_args_list[1][0][0]
+        fields = [put_args[i + 1] for i, a in enumerate(put_args) if a == "-f"]
+        label_fields = [f for f in fields if f.startswith("labels=")]
+        assert label_fields, "Expected labels field in PUT call"
+        label_set = set(label_fields[0][len("labels=") :].split(","))
+        assert "type::feature" not in label_set
+        assert "keep" in label_set
+
+    @patch("subprocess.run")
+    def test_update_issue_with_no_fields_issues_no_api_call(
+        self, mock_run: Mock, new_config_path: Path
+    ) -> None:
+        """update_issue() with no fields at all must not call the API.
+
+        The zero-call invariant was previously pinned only incidentally by
+        tests named for other contracts (e.g. the status-alone and
+        epic-only tests), so refactoring `has_put_fields` could leave this
+        exact case — no field, no flag, nothing — unguarded.
+        """
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        updater.update_issue("231")
+
+        assert mock_run.call_count == 0
 
     @patch("subprocess.run")
     def test_update_issue_label_merge(self, mock_run: Mock, new_config_path: Path) -> None:
@@ -300,6 +394,26 @@ class TestUpdateIssue:
         # Raised before any write, so neither the lookup nor the PUT went out.
         assert mock_run.call_count == 0
 
+    @patch("subprocess.run")
+    def test_update_issue_weight_zero_is_sent(self, mock_run: Mock, new_config_path: Path) -> None:
+        """weight=0 must reach the PUT: 0 is a documented non-negative weight.
+
+        has_put_fields tested `weight` for truthiness, so 0 as the sole field made
+        the whole PUT a silent no-op — exit 0, no API call, no output. Passing any
+        other field alongside it masked the bug.
+        """
+        put_response = Mock(stdout='{"iid": 231, "title": "T"}', stderr="", returncode=0)
+        mock_run.side_effect = [put_response]
+
+        config = Config(new_config_path)
+        updater = TicketUpdater(config)
+
+        updater.update_issue("231", weight=0)
+
+        assert mock_run.call_count == 1, "weight=0 alone must still issue the PUT"
+        put_args = mock_run.call_args_list[0][0][0]
+        fields = [put_args[i + 1] for i, a in enumerate(put_args) if a == "-f"]
+        assert any("weight=0" in f for f in fields)
 
     def test_update_issue_invalid_label_raises(self, new_config_path: Path) -> None:
         """labels_add containing a label not in the allowed list raises ValueError."""
@@ -318,18 +432,30 @@ class TestUpdateIssue:
             updater.update_issue("231", labels_add=["not-allowed::label"])
 
     @patch("subprocess.run")
-    def test_update_issue_valid_label_does_not_raise(
+    def test_update_issue_labels_add_alone_triggers_put(
         self, mock_run: Mock, new_config_path: Path
     ) -> None:
-        """labels_add containing only allowed labels proceeds without error."""
-        mock_run.side_effect = [
-            Mock(stdout='{"iid": 231, "labels": []}', stderr="", returncode=0),
-            Mock(stdout='{"iid": 231, "title": "T"}', stderr="", returncode=0),
-        ]
+        """A labels_add with no other field still counts as an update, and
+        a label in the allowed list proceeds without raising.
+
+        labels_add must appear in has_put_fields; omitting it there makes
+        a labels_add-only call silently no-op instead of issuing the PUT.
+        """
+        get_response = Mock(stdout='{"iid": 231, "labels": []}', stderr="", returncode=0)
+        put_response = Mock(stdout='{"iid": 231, "title": "T"}', stderr="", returncode=0)
+        mock_run.side_effect = [get_response, put_response]
+
         config = Config(new_config_path)
         updater = TicketUpdater(config)
 
         updater.update_issue("231", labels_add=["type::bug"])  # in allowed list — must not raise
+
+        assert mock_run.call_count == 2
+        put_args = mock_run.call_args_list[1][0][0]
+        fields = [put_args[i + 1] for i, a in enumerate(put_args) if a == "-f"]
+        label_fields = [f for f in fields if f.startswith("labels=")]
+        assert label_fields, "Expected labels field in PUT call"
+        assert "type::bug" in label_fields[0][len("labels=") :].split(",")
 
 
 # ---------------------------------------------------------------------------
@@ -479,7 +605,6 @@ class TestUpdateMr:
         assert "merge_requests/144" in endpoint_str
         # Must NOT use the :id sentinel when a real path is available.
         assert ":id" not in endpoint_str
-
 
     def test_update_mr_invalid_label_raises(self, new_config_path: Path) -> None:
         """labels_add containing a disallowed label raises ValueError."""
@@ -700,7 +825,6 @@ class TestUpdateEpic:
         assert "DRY RUN" in captured.out
         assert "milestone_id" in captured.out
         assert "Sprint 1" in captured.out
-
 
     def test_update_epic_invalid_label_raises(self, new_config_path: Path) -> None:
         """labels_add containing a disallowed label raises ValueError for epics."""
@@ -1085,51 +1209,66 @@ class TestUpdateIssueEpic:
 class TestCmdUpdateEpicValidation:
     """Tests for cmd_update --epic flag validation."""
 
-    def test_epic_rejected_for_mr(self, new_config_path: Path) -> None:
-        """--epic is rejected with an error when used on an MR resource."""
-        old_argv = sys.argv
-        try:
-            sys.argv = [
-                "projctl",
-                "--config",
-                str(new_config_path),
-                "update",
-                "mr",
-                "144",
-                "--epic",
-                "&47",
-            ]
-            result = cli_main()
-        finally:
-            sys.argv = old_argv
+    def test_epic_rejected_for_mr(self, new_config_path: Path, caplog) -> None:
+        """--epic is rejected with an error when used on an MR resource.
+
+        The message, not just the exit code: `epic` is absent from the MR
+        `has_update` list, so this argv exits 1 via the pre-existing "No
+        fields to update" branch even with the guard deleted — asserting
+        only the code leaves that guard deletable with the suite green.
+        """
+        with caplog.at_level("ERROR"):
+            result, mock_run = _run_cli(
+                [
+                    "projctl",
+                    "--config",
+                    str(new_config_path),
+                    "update",
+                    "mr",
+                    "144",
+                    "--epic",
+                    "&47",
+                ]
+            )
 
         assert result == 1
+        assert "--epic is only valid for issue resources" in caplog.text
+        assert mock_run.call_count == 0
 
-    def test_epic_rejected_for_milestone(self, new_config_path: Path) -> None:
-        """--epic is rejected with an error when used on a milestone resource."""
-        old_argv = sys.argv
-        try:
-            sys.argv = [
-                "projctl",
-                "--config",
-                str(new_config_path),
-                "update",
-                "milestone",
-                "10",
-                "--epic",
-                "&47",
-            ]
-            result = cli_main()
-        finally:
-            sys.argv = old_argv
+    def test_epic_rejected_for_milestone(self, new_config_path: Path, caplog) -> None:
+        """--epic is rejected with an error when used on a milestone resource.
+
+        The message, not just the exit code: `epic` is absent from the
+        milestone `has_update` list, so this argv exits 1 via the
+        pre-existing "No fields to update" branch even with the guard
+        deleted — asserting only the code leaves that guard deletable with
+        the suite green.
+        """
+        with caplog.at_level("ERROR"):
+            result, mock_run = _run_cli(
+                [
+                    "projctl",
+                    "--config",
+                    str(new_config_path),
+                    "update",
+                    "milestone",
+                    "10",
+                    "--epic",
+                    "&47",
+                ]
+            )
 
         assert result == 1
+        assert "--epic is only valid for issue resources" in caplog.text
+        assert mock_run.call_count == 0
 
     def test_epic_alone_counts_as_update_field(self, new_config_path: Path) -> None:
         """--epic alone satisfies the 'at least one update field' requirement."""
-        old_argv = sys.argv
-        try:
-            sys.argv = [
+        epic_response = Mock(stdout='{"id": 999, "iid": 47}', stderr="", returncode=0)
+        put_response = Mock(stdout='{"iid": 231, "title": "T"}', stderr="", returncode=0)
+
+        result, _mock_run = _run_cli(
+            [
                 "projctl",
                 "--config",
                 str(new_config_path),
@@ -1138,21 +1277,22 @@ class TestCmdUpdateEpicValidation:
                 "231",
                 "--epic",
                 "&47",
-            ]
-            epic_response = Mock(stdout='{"id": 999, "iid": 47}', stderr="", returncode=0)
-            put_response = Mock(stdout='{"iid": 231, "title": "T"}', stderr="", returncode=0)
-            with patch("subprocess.run", side_effect=[epic_response, put_response]):
-                result = cli_main()
-        finally:
-            sys.argv = old_argv
+            ],
+            side_effect=[epic_response, put_response],
+        )
 
         assert result == 0
 
     def test_milestone_accepted_for_epic(self, new_config_path: Path) -> None:
         """--milestone is accepted for epic resources and triggers update_epic with milestone."""
-        old_argv = sys.argv
-        try:
-            sys.argv = [
+        title_response = Mock(stdout='{"iid": 43, "title": "My Epic"}', stderr="", returncode=0)
+        milestones_response = Mock(
+            stdout='[{"id": 200, "iid": 24, "title": "Sprint 2"}]', stderr="", returncode=0
+        )
+        put_response = Mock(stdout='{"iid": 43, "title": "My Epic"}', stderr="", returncode=0)
+
+        result, _mock_run = _run_cli(
+            [
                 "projctl",
                 "--config",
                 str(new_config_path),
@@ -1161,40 +1301,38 @@ class TestCmdUpdateEpicValidation:
                 "43",
                 "--milestone",
                 "24",
-            ]
-            title_response = Mock(stdout='{"iid": 43, "title": "My Epic"}', stderr="", returncode=0)
-            milestones_response = Mock(
-                stdout='[{"id": 200, "iid": 24, "title": "Sprint 2"}]', stderr="", returncode=0
-            )
-            put_response = Mock(stdout='{"iid": 43, "title": "My Epic"}', stderr="", returncode=0)
-            with patch(
-                "subprocess.run", side_effect=[title_response, milestones_response, put_response]
-            ):
-                result = cli_main()
-        finally:
-            sys.argv = old_argv
+            ],
+            side_effect=[title_response, milestones_response, put_response],
+        )
 
         assert result == 0
 
-    def test_milestone_rejected_for_milestone_resource(self, new_config_path: Path) -> None:
-        """--milestone is still rejected when the resource type is milestone."""
-        old_argv = sys.argv
-        try:
-            sys.argv = [
-                "projctl",
-                "--config",
-                str(new_config_path),
-                "update",
-                "milestone",
-                "10",
-                "--milestone",
-                "24",
-            ]
-            result = cli_main()
-        finally:
-            sys.argv = old_argv
+    def test_milestone_rejected_for_milestone_resource(self, new_config_path: Path, caplog) -> None:
+        """--milestone is still rejected when the resource type is milestone.
+
+        The message, not just the exit code: `milestone` is absent from the
+        milestone `has_update` list, so this argv exits 1 via the
+        pre-existing "No fields to update" branch even with the guard
+        deleted — asserting only the code leaves that guard deletable with
+        the suite green.
+        """
+        with caplog.at_level("ERROR"):
+            result, mock_run = _run_cli(
+                [
+                    "projctl",
+                    "--config",
+                    str(new_config_path),
+                    "update",
+                    "milestone",
+                    "10",
+                    "--milestone",
+                    "24",
+                ]
+            )
 
         assert result == 1
+        assert "--milestone is not valid for milestone resources" in caplog.text
+        assert mock_run.call_count == 0
 
 
 class TestUpdateIssueFields:
@@ -1476,47 +1614,89 @@ class TestResolveProjectId:  # pylint: disable=too-few-public-methods
 class TestCmdUpdateBlockerValidation:
     """Tests for cmd_update --add-blocker / --remove-blocker CLI wiring."""
 
-    def _run_cli(self, args_list, side_effect=None):
-        """Invoke cli_main with the given argv, optionally mocking subprocess.run."""
-        old_argv = sys.argv
-        try:
-            sys.argv = args_list
-            if side_effect is None:
-                return cli_main()
-            with patch("subprocess.run", side_effect=side_effect):
-                return cli_main()
-        finally:
-            sys.argv = old_argv
+    def test_add_blocker_rejected_for_mr(self, new_config_path: Path, caplog) -> None:
+        """--add-blocker is rejected on MR resources.
 
-    def test_add_blocker_rejected_for_mr(self, new_config_path: Path) -> None:
-        """--add-blocker is rejected on MR resources."""
-        result = self._run_cli(
-            [
-                "projctl", "--config", str(new_config_path),
-                "update", "mr", "144", "--add-blocker", "252",
-            ]
-        )
+        The message, not just the exit code: the blocker flags are absent
+        from the MR `has_update` list, so this argv exits 1 via the
+        pre-existing "No fields to update" branch even with the guard
+        deleted — asserting only the code leaves that guard deletable with
+        the suite green.
+        """
+        with caplog.at_level("ERROR"):
+            result, mock_run = _run_cli(
+                [
+                    "projctl",
+                    "--config",
+                    str(new_config_path),
+                    "update",
+                    "mr",
+                    "144",
+                    "--add-blocker",
+                    "252",
+                ]
+            )
         assert result == 1
+        assert (
+            "--add-blocker and --remove-blocker are only valid for issue resources" in caplog.text
+        )
+        assert mock_run.call_count == 0
 
-    def test_add_blocker_rejected_for_epic(self, new_config_path: Path) -> None:
-        """--add-blocker is rejected on epic resources."""
-        result = self._run_cli(
-            [
-                "projctl", "--config", str(new_config_path),
-                "update", "epic", "37", "--add-blocker", "252",
-            ]
-        )
-        assert result == 1
+    def test_add_blocker_rejected_for_epic(self, new_config_path: Path, caplog) -> None:
+        """--add-blocker is rejected on epic resources.
 
-    def test_remove_blocker_rejected_for_milestone(self, new_config_path: Path) -> None:
-        """--remove-blocker is rejected on milestone resources."""
-        result = self._run_cli(
-            [
-                "projctl", "--config", str(new_config_path),
-                "update", "milestone", "10", "--remove-blocker", "252",
-            ]
-        )
+        The message, not just the exit code: the blocker flags are absent
+        from the epic `has_update` list, so this argv exits 1 via the
+        pre-existing "No fields to update" branch even with the guard
+        deleted — asserting only the code leaves that guard deletable with
+        the suite green.
+        """
+        with caplog.at_level("ERROR"):
+            result, mock_run = _run_cli(
+                [
+                    "projctl",
+                    "--config",
+                    str(new_config_path),
+                    "update",
+                    "epic",
+                    "37",
+                    "--add-blocker",
+                    "252",
+                ]
+            )
         assert result == 1
+        assert (
+            "--add-blocker and --remove-blocker are only valid for issue resources" in caplog.text
+        )
+        assert mock_run.call_count == 0
+
+    def test_remove_blocker_rejected_for_milestone(self, new_config_path: Path, caplog) -> None:
+        """--remove-blocker is rejected on milestone resources.
+
+        The message, not just the exit code: the blocker flags are absent
+        from the milestone `has_update` list, so this argv exits 1 via the
+        pre-existing "No fields to update" branch even with the guard
+        deleted — asserting only the code leaves that guard deletable with
+        the suite green.
+        """
+        with caplog.at_level("ERROR"):
+            result, mock_run = _run_cli(
+                [
+                    "projctl",
+                    "--config",
+                    str(new_config_path),
+                    "update",
+                    "milestone",
+                    "10",
+                    "--remove-blocker",
+                    "252",
+                ]
+            )
+        assert result == 1
+        assert (
+            "--add-blocker and --remove-blocker are only valid for issue resources" in caplog.text
+        )
+        assert mock_run.call_count == 0
 
     def test_add_blocker_alone_counts_as_update_field(self, new_config_path: Path) -> None:
         """--add-blocker with no other flags satisfies the at-least-one-field rule."""
@@ -1524,10 +1704,16 @@ class TestCmdUpdateBlockerValidation:
         project_response = Mock(stdout='{"id": 555}', stderr="", returncode=0)
         post_response = Mock(stdout="{}", stderr="", returncode=0)
 
-        result = self._run_cli(
+        result, _mock_run = _run_cli(
             [
-                "projctl", "--config", str(new_config_path),
-                "update", "issue", "376", "--add-blocker", "385",
+                "projctl",
+                "--config",
+                str(new_config_path),
+                "update",
+                "issue",
+                "376",
+                "--add-blocker",
+                "385",
             ],
             side_effect=[project_response, post_response],
         )
@@ -1540,31 +1726,45 @@ class TestCmdUpdateBlockerValidation:
         get_response = Mock(stdout=links_payload, stderr="", returncode=0)
         delete_response = Mock(stdout="", stderr="", returncode=0)
 
-        result = self._run_cli(
+        result, _mock_run = _run_cli(
             [
-                "projctl", "--config", str(new_config_path),
-                "update", "issue", "376", "--remove-blocker", "385",
+                "projctl",
+                "--config",
+                str(new_config_path),
+                "update",
+                "issue",
+                "376",
+                "--remove-blocker",
+                "385",
             ],
             side_effect=[get_response, delete_response],
         )
         assert result == 0
 
-    def test_add_blocker_with_title_triggers_both_operations(
-        self, new_config_path: Path
-    ) -> None:
+    def test_add_blocker_with_title_triggers_both_operations(self, new_config_path: Path) -> None:
         """--add-blocker combined with --title triggers PUT (title) then POST (link)."""
         put_response = Mock(stdout='{"iid": 376, "title": "New"}', stderr="", returncode=0)
         project_response = Mock(stdout='{"id": 555}', stderr="", returncode=0)
         post_response = Mock(stdout="{}", stderr="", returncode=0)
 
-        result = self._run_cli(
+        result, mock_run = _run_cli(
             [
-                "projctl", "--config", str(new_config_path),
-                "update", "issue", "376", "--title", "New", "--add-blocker", "385",
+                "projctl",
+                "--config",
+                str(new_config_path),
+                "update",
+                "issue",
+                "376",
+                "--title",
+                "New",
+                "--add-blocker",
+                "385",
             ],
             side_effect=[put_response, project_response, post_response],
         )
         assert result == 0
+        # PUT (title) + project-id lookup + POST (link) — all three must fire.
+        assert mock_run.call_count == 3
 
     def test_add_and_remove_blocker_together(self, new_config_path: Path) -> None:
         """Both --remove-blocker and --add-blocker in one call trigger DELETE then POST."""
@@ -1575,25 +1775,39 @@ class TestCmdUpdateBlockerValidation:
         project_response = Mock(stdout='{"id": 555}', stderr="", returncode=0)
         post_response = Mock(stdout="{}", stderr="", returncode=0)
 
-        result = self._run_cli(
+        result, mock_run = _run_cli(
             [
-                "projctl", "--config", str(new_config_path),
-                "update", "issue", "376",
-                "--remove-blocker", "252", "--add-blocker", "385",
+                "projctl",
+                "--config",
+                str(new_config_path),
+                "update",
+                "issue",
+                "376",
+                "--remove-blocker",
+                "252",
+                "--add-blocker",
+                "385",
             ],
             side_effect=[get_response, delete_response, project_response, post_response],
         )
         assert result == 0
+        # GET + DELETE (remove) + project-id lookup + POST (add) — all four must fire.
+        assert mock_run.call_count == 4
 
     def test_no_flags_still_errors(self, new_config_path: Path) -> None:
         """update issue with no flags still errors even after adding blocker flags."""
-        result = self._run_cli(
+        result, mock_run = _run_cli(
             [
-                "projctl", "--config", str(new_config_path),
-                "update", "issue", "376",
+                "projctl",
+                "--config",
+                str(new_config_path),
+                "update",
+                "issue",
+                "376",
             ]
         )
         assert result == 1
+        assert mock_run.call_count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1603,18 +1817,6 @@ class TestCmdUpdateBlockerValidation:
 
 class TestCmdUpdateNoMilestoneValidation:
     """Tests for cmd_update --no-milestone flag validation."""
-
-    def _run_cli(self, args_list, side_effect=None):
-        """Invoke cli_main with the given argv, optionally mocking subprocess.run."""
-        old_argv = sys.argv
-        try:
-            sys.argv = args_list
-            if side_effect is None:
-                return cli_main()
-            with patch("subprocess.run", side_effect=side_effect):
-                return cli_main()
-        finally:
-            sys.argv = old_argv
 
     @pytest.mark.parametrize("resource, ref", [("mr", "144"), ("epic", "121"), ("milestone", "10")])
     def test_no_milestone_rejected_for_non_issue_resources(
@@ -1628,14 +1830,20 @@ class TestCmdUpdateNoMilestoneValidation:
         leaves the guard deletable with the suite green.
         """
         with caplog.at_level("ERROR"):
-            result = self._run_cli(
+            result, mock_run = _run_cli(
                 [
-                    "projctl", "--config", str(new_config_path),
-                    "update", resource, ref, "--no-milestone",
+                    "projctl",
+                    "--config",
+                    str(new_config_path),
+                    "update",
+                    resource,
+                    ref,
+                    "--no-milestone",
                 ]
             )
         assert result == 1
         assert "--no-milestone is only valid for issue resources" in caplog.text
+        assert mock_run.call_count == 0
 
     def test_no_milestone_and_milestone_together_rejected(
         self, new_config_path: Path, caplog
@@ -1647,14 +1855,22 @@ class TestCmdUpdateNoMilestoneValidation:
         message distinguishes the CLI guard from the handler's backstop.
         """
         with caplog.at_level("ERROR"):
-            result = self._run_cli(
+            result, mock_run = _run_cli(
                 [
-                    "projctl", "--config", str(new_config_path),
-                    "update", "issue", "231", "--milestone", "v2.0", "--no-milestone",
+                    "projctl",
+                    "--config",
+                    str(new_config_path),
+                    "update",
+                    "issue",
+                    "231",
+                    "--milestone",
+                    "v2.0",
+                    "--no-milestone",
                 ]
             )
         assert result == 1
         assert "--milestone and --no-milestone are mutually exclusive" in caplog.text
+        assert mock_run.call_count == 0
 
     def test_no_milestone_alone_reaches_the_handler(self, new_config_path: Path, capsys) -> None:
         """--no-milestone alone is a field, and must survive to the PUT.
@@ -1663,16 +1879,23 @@ class TestCmdUpdateNoMilestoneValidation:
         independent lists in `cmd_update` (`has_update` and `non_link_update`), and
         dropping it from the second makes the flag a silent no-op at exit 0.
         """
-        result = self._run_cli(
+        result, mock_run = _run_cli(
             [
-                "projctl", "--config", str(new_config_path),
-                "update", "issue", "231", "--no-milestone", "--dry-run",
+                "projctl",
+                "--config",
+                str(new_config_path),
+                "update",
+                "issue",
+                "231",
+                "--no-milestone",
+                "--dry-run",
             ]
         )
         assert result == 0
         out = capsys.readouterr().out
         assert "Would PUT" in out
         assert "'milestone_id': 0" in out
+        assert mock_run.call_count == 0
 
     def test_no_milestone_rejected_on_github_platform(self, tmp_path: Path, caplog) -> None:
         """`gh issue edit` cannot clear a milestone, so the flag must not exit 0.
@@ -1685,15 +1908,124 @@ class TestCmdUpdateNoMilestoneValidation:
 
         with caplog.at_level("ERROR"):
             with patch("projctl.handlers.github_updater.run_gh_command") as mock_gh:
-                result = self._run_cli(
+                result, mock_run = _run_cli(
                     [
-                        "projctl", "--config", str(cfg_path),
-                        "update", "issue", "231", "--no-milestone",
+                        "projctl",
+                        "--config",
+                        str(cfg_path),
+                        "update",
+                        "issue",
+                        "231",
+                        "--no-milestone",
                     ]
                 )
         assert result == 1
         assert "--no-milestone (clear milestone) is not supported on GitHub" in caplog.text
         assert mock_gh.call_count == 0
+        assert mock_run.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# cmd_update — --weight
+# ---------------------------------------------------------------------------
+
+
+class TestCmdUpdateWeight:
+    """Tests for cmd_update --weight, including the falsy-zero boundary."""
+
+    @pytest.mark.parametrize("weight", ["0", "3"])
+    def test_weight_reaches_the_put_field_map(
+        self, new_config_path: Path, capsys, weight: str
+    ) -> None:
+        """--weight N must reach the PUT field map for every valid N, 0 included.
+
+        This is the dry-run preview, not a live PUT — the live gate is covered by
+        TestUpdateIssue::test_update_issue_weight_zero_is_sent. Parametrized over
+        the falsy and truthy case together: --weight 0 printed nothing and exited
+        0, while --weight 3 worked, so only the boundary distinguishes a correct
+        has_put_fields from a truthiness test.
+        """
+        result, mock_run = _run_cli(
+            [
+                "projctl",
+                "--config",
+                str(new_config_path),
+                "update",
+                "issue",
+                "231",
+                "--weight",
+                weight,
+                "--dry-run",
+            ]
+        )
+        assert result == 0
+        out = capsys.readouterr().out
+        assert "Would PUT" in out
+        assert f"'weight': {weight}" in out
+        assert mock_run.call_count == 0
+
+    @pytest.mark.parametrize(
+        "resource, ref, weight",
+        [("mr", "144", "3"), ("epic", "37", "0"), ("milestone", "10", "3")],
+    )
+    def test_weight_rejected_for_non_issue_resources(
+        self, new_config_path: Path, caplog, resource: str, ref: str, weight: str
+    ) -> None:
+        """--weight is rejected on every non-issue resource, including 0.
+
+        The message, not the exit code: `weight` is absent from every non-issue
+        `has_update` list, so `cmd_update` returns 1 for this argv anyway via the
+        pre-existing "No fields to update" branch. Asserting only the code leaves
+        the guard deletable with the suite green. The epic case carries 0 rather
+        than 3 so a guard narrowed to truthiness ("--weight 0" reads as absent)
+        would also survive undetected.
+        """
+        with caplog.at_level("ERROR"):
+            result, mock_run = _run_cli(
+                [
+                    "projctl",
+                    "--config",
+                    str(new_config_path),
+                    "update",
+                    resource,
+                    ref,
+                    "--weight",
+                    weight,
+                ]
+            )
+        assert result == 1
+        assert "--weight is only valid for issue resources" in caplog.text
+        assert mock_run.call_count == 0
+
+    def test_weight_rejected_for_non_issue_resource_even_with_another_field(
+        self, new_config_path: Path, caplog
+    ) -> None:
+        """--weight combined with --title on a non-issue resource is still
+        rejected outright.
+
+        Without this, a guard narrowed to fire only when --weight is the
+        sole flag would let --title carry the "No fields to update" case
+        past the rejection while --weight is silently dropped — the exact
+        masking mechanism `--weight 0` exhibited before this guard existed.
+        """
+        with caplog.at_level("ERROR"):
+            result, mock_run = _run_cli(
+                [
+                    "projctl",
+                    "--config",
+                    str(new_config_path),
+                    "update",
+                    "mr",
+                    "144",
+                    "--title",
+                    "T",
+                    "--weight",
+                    "3",
+                ]
+            )
+        assert result == 1
+        assert "--weight is only valid for issue resources" in caplog.text
+        assert mock_run.call_count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1778,16 +2110,14 @@ class TestUpdateIssueStatus:
         assert "iid=231" in fields
 
         mutation_args = mock_run.call_args_list[1][0][0]
-        mutation_fields = [
-            mutation_args[i + 1] for i, a in enumerate(mutation_args) if a == "-f"
-        ]
+        mutation_fields = [mutation_args[i + 1] for i, a in enumerate(mutation_args) if a == "-f"]
         mutation_str = " ".join(mutation_fields)
         # Field positions, not membership: substring assertions pass when the two
         # GIDs are transposed, which is the whole contract with GitLab.
         assert "workItemUpdate(input:" in mutation_str
         assert 'id: "gid://gitlab/WorkItem/205512"' in mutation_str
         assert (
-            'statusWidget: { status: '
+            "statusWidget: { status: "
             '"gid://gitlab/WorkItems::Statuses::SystemDefined::Status/2" }'
         ) in mutation_str
 
@@ -1829,9 +2159,7 @@ class TestUpdateIssueStatus:
         self, mock_run: Mock, new_config_path: Path
     ) -> None:
         """A null 'project' in the GraphQL response raises PlatformError."""
-        mock_run.return_value = Mock(
-            stdout='{"data": {"project": null}}', stderr="", returncode=0
-        )
+        mock_run.return_value = Mock(stdout='{"data": {"project": null}}', stderr="", returncode=0)
 
         config = Config(new_config_path)
         updater = TicketUpdater(config)
@@ -1882,9 +2210,7 @@ class TestUpdateIssueStatus:
         self, mock_run: Mock, new_config_path: Path
     ) -> None:
         """The item's type is absent from workItemTypes entirely."""
-        mock_run.return_value = _status_resolve_response(
-            _DEFAULT_STATUSES, item_type="Issue"
-        )
+        mock_run.return_value = _status_resolve_response(_DEFAULT_STATUSES, item_type="Issue")
         body = json.loads(mock_run.return_value.stdout)
         body["data"]["project"]["workItems"]["nodes"][0]["workItemType"]["name"] = "Incident"
         mock_run.return_value = Mock(stdout=json.dumps(body), stderr="", returncode=0)
@@ -1970,9 +2296,7 @@ class TestUpdateIssueStatus:
         """A refused write comes back as a top-level errors body with no `data`."""
         mock_run.side_effect = [
             _status_resolve_response(_DEFAULT_STATUSES),
-            Mock(
-                stdout='{"errors": [{"message": "Forbidden"}]}', stderr="", returncode=0
-            ),
+            Mock(stdout='{"errors": [{"message": "Forbidden"}]}', stderr="", returncode=0),
         ]
 
         config = Config(new_config_path)
@@ -2007,7 +2331,7 @@ class TestUpdateIssueStatus:
         assert "DRY RUN" in captured.out
         assert 'id: "gid://gitlab/WorkItem/205512"' in captured.out
         assert (
-            'statusWidget: { status: '
+            "statusWidget: { status: "
             '"gid://gitlab/WorkItems::Statuses::SystemDefined::Status/2" }'
         ) in captured.out
 
@@ -2218,9 +2542,7 @@ class TestUpdateIssueStatus:
         assert "in PROGRESS" not in captured.out
 
     @patch("subprocess.run")
-    def test_status_alone_triggers_no_put_call(
-        self, mock_run: Mock, new_config_path: Path
-    ) -> None:
+    def test_status_alone_triggers_no_put_call(self, mock_run: Mock, new_config_path: Path) -> None:
         """--status alone does not go through the issue PUT endpoint at all."""
         resolve_response = _status_resolve_response(_DEFAULT_STATUSES)
         mutation_response = Mock(
@@ -2247,21 +2569,7 @@ class TestUpdateIssueStatus:
 class TestCmdUpdateStatusValidation:
     """Tests for cmd_update --status flag validation and dispatch."""
 
-    def _run_cli(self, args_list, side_effect=None):
-        """Invoke cli_main with the given argv, optionally mocking subprocess.run."""
-        old_argv = sys.argv
-        try:
-            sys.argv = args_list
-            if side_effect is None:
-                return cli_main()
-            with patch("subprocess.run", side_effect=side_effect):
-                return cli_main()
-        finally:
-            sys.argv = old_argv
-
-    @pytest.mark.parametrize(
-        "resource, ref", [("mr", "144"), ("epic", "37"), ("milestone", "10")]
-    )
+    @pytest.mark.parametrize("resource, ref", [("mr", "144"), ("epic", "37"), ("milestone", "10")])
     def test_status_rejected_for_non_issue_resources(
         self, new_config_path: Path, caplog, resource: str, ref: str
     ) -> None:
@@ -2272,56 +2580,84 @@ class TestCmdUpdateStatusValidation:
         leaves the guard deletable with the suite green.
         """
         with caplog.at_level("ERROR"):
-            result = self._run_cli(
+            result, mock_run = _run_cli(
                 [
-                    "projctl", "--config", str(new_config_path),
-                    "update", resource, ref, "--status", "In progress",
+                    "projctl",
+                    "--config",
+                    str(new_config_path),
+                    "update",
+                    resource,
+                    ref,
+                    "--status",
+                    "In progress",
                 ]
             )
         assert result == 1
         assert "--status is only valid for issue resources" in caplog.text
+        assert mock_run.call_count == 0
 
     def test_empty_status_is_rejected_by_name_on_an_issue(
         self, new_config_path: Path, caplog
     ) -> None:
         """`--status "$VAR"` with VAR unset must not read as "no field specified"."""
         with caplog.at_level("ERROR"):
-            result = self._run_cli(
+            result, mock_run = _run_cli(
                 [
-                    "projctl", "--config", str(new_config_path),
-                    "update", "issue", _STATUS_ISSUE_URL, "--status", "",
+                    "projctl",
+                    "--config",
+                    str(new_config_path),
+                    "update",
+                    "issue",
+                    _STATUS_ISSUE_URL,
+                    "--status",
+                    "",
                 ]
             )
         assert result == 1
         assert "--status requires a non-empty status name" in caplog.text
+        assert mock_run.call_count == 0
 
     def test_empty_status_on_an_mr_is_rejected_not_silently_dropped(
         self, new_config_path: Path, caplog
     ) -> None:
         """This exited 0 with the flag silently discarded — a silent accept."""
         with caplog.at_level("ERROR"):
-            result = self._run_cli(
+            result, mock_run = _run_cli(
                 [
-                    "projctl", "--config", str(new_config_path),
-                    "update", "mr", "144", "--title", "T", "--status", "",
+                    "projctl",
+                    "--config",
+                    str(new_config_path),
+                    "update",
+                    "mr",
+                    "144",
+                    "--title",
+                    "T",
+                    "--status",
+                    "",
                 ]
             )
         assert result == 1
         assert "--status is only valid for issue resources" in caplog.text
+        assert mock_run.call_count == 0
 
-    def test_whitespace_only_status_is_rejected(
-        self, new_config_path: Path, caplog
-    ) -> None:
+    def test_whitespace_only_status_is_rejected(self, new_config_path: Path, caplog) -> None:
         """Whitespace would otherwise reach the resolver as Unknown status '   '."""
         with caplog.at_level("ERROR"):
-            result = self._run_cli(
+            result, mock_run = _run_cli(
                 [
-                    "projctl", "--config", str(new_config_path),
-                    "update", "issue", _STATUS_ISSUE_URL, "--status", "   ",
+                    "projctl",
+                    "--config",
+                    str(new_config_path),
+                    "update",
+                    "issue",
+                    _STATUS_ISSUE_URL,
+                    "--status",
+                    "   ",
                 ]
             )
         assert result == 1
         assert "--status requires a non-empty status name" in caplog.text
+        assert mock_run.call_count == 0
 
     def test_status_alone_counts_as_update_field(self, new_config_path: Path) -> None:
         """--status alone (no other flags) satisfies the at-least-one-field rule."""
@@ -2332,10 +2668,16 @@ class TestCmdUpdateStatusValidation:
             returncode=0,
         )
 
-        result = self._run_cli(
+        result, _mock_run = _run_cli(
             [
-                "projctl", "--config", str(new_config_path),
-                "update", "issue", _STATUS_ISSUE_URL, "--status", "In progress",
+                "projctl",
+                "--config",
+                str(new_config_path),
+                "update",
+                "issue",
+                _STATUS_ISSUE_URL,
+                "--status",
+                "In progress",
             ],
             side_effect=[resolve_response, mutation_response],
         )
@@ -2345,32 +2687,46 @@ class TestCmdUpdateStatusValidation:
         """update --dry-run with --status resolves but never sends the mutation."""
         resolve_response = _status_resolve_response(_DEFAULT_STATUSES)
 
-        result = self._run_cli(
+        result, mock_run = _run_cli(
             [
-                "projctl", "--config", str(new_config_path),
-                "update", "issue", _STATUS_ISSUE_URL,
-                "--status", "In progress", "--dry-run",
+                "projctl",
+                "--config",
+                str(new_config_path),
+                "update",
+                "issue",
+                _STATUS_ISSUE_URL,
+                "--status",
+                "In progress",
+                "--dry-run",
             ],
             side_effect=[resolve_response],
         )
         assert result == 0
+        # The one call is the read-only status resolution; the mutation
+        # itself must not fire under dry-run.
+        assert mock_run.call_count == 1
 
-    def test_empty_status_rejected_on_github_platform(
-        self, tmp_path: Path, caplog
-    ) -> None:
+    def test_empty_status_rejected_on_github_platform(self, tmp_path: Path, caplog) -> None:
         """Truthiness here let `--status ""` through to the GitHub updater silently."""
         cfg_path = tmp_path / "github_config.yaml"
         cfg_path.write_text("platform: github\ngithub:\n  repo: owner/repo\n")
 
         with caplog.at_level("ERROR"):
-            result = self._run_cli(
+            result, mock_run = _run_cli(
                 [
-                    "projctl", "--config", str(cfg_path),
-                    "update", "issue", "231", "--status", "",
+                    "projctl",
+                    "--config",
+                    str(cfg_path),
+                    "update",
+                    "issue",
+                    "231",
+                    "--status",
+                    "",
                 ]
             )
         assert result == 1
         assert "not supported on GitHub" in caplog.text
+        assert mock_run.call_count == 0
 
     def test_status_rejected_on_github_platform(self, tmp_path: Path, caplog) -> None:
         """--status is rejected outright when the configured platform is GitHub."""
@@ -2378,11 +2734,18 @@ class TestCmdUpdateStatusValidation:
         cfg_path.write_text("platform: github\ngithub:\n  repo: owner/repo\n")
 
         with caplog.at_level("ERROR"):
-            result = self._run_cli(
+            result, mock_run = _run_cli(
                 [
-                    "projctl", "--config", str(cfg_path),
-                    "update", "issue", "231", "--status", "In progress",
+                    "projctl",
+                    "--config",
+                    str(cfg_path),
+                    "update",
+                    "issue",
+                    "231",
+                    "--status",
+                    "In progress",
                 ]
             )
         assert result == 1
+        assert mock_run.call_count == 0
         assert "not supported on GitHub" in caplog.text

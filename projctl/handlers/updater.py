@@ -726,7 +726,11 @@ class TicketUpdater:
                 assignee,
                 milestone,
                 clear_milestone,
-                weight,
+                # `is not None`, not truthiness: 0 is a documented non-negative
+                # weight. Testing it for truth made `--weight 0` alone skip the PUT
+                # entirely — exit 0, no API call, no output. Any other field in the
+                # same call masked it, this being an any() over all of them.
+                weight is not None,
                 due_date,
             ]
         )
