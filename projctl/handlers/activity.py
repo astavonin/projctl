@@ -53,13 +53,16 @@ _MR_REVIEW_FILE_RE = re.compile(r"(?:^|/)reviews/MR(\d+)-review\.yaml$")
 # planning/<goal>/<N>-<slug>/... — the single-issue 2-layer planning shape,
 # where the issue folder sits directly under the goal with no
 # "milestone-XX/issues/" between them. Three planning shapes are sanctioned;
-# this one and the 3-layer shape are issue folders and are covered here,
-# while the third — the multi-step planning/<goal>/<work-slug>/<step-or-issue-name>/
-# — deliberately is not (see _flat_issue_id). A repo on this single-issue
-# shape was reporting no planning evidence at all: every design doc, review
-# report and ledger written there was invisible, so an issue worked on for
-# a full day showed up with whatever its branch or a single commit happened
-# to prove.
+# attribution keys on the component directly inside the goal folder (see
+# _flat_issue_id), so a numerically-named component there also claims every
+# file beneath it, including one nested inside the third shape's deeper
+# planning/<goal>/<work-slug>/<step-or-issue-name>/ folder — that deeper
+# component is never itself read as an issue, since a bare <N>-<slug> name
+# there is indistinguishable from "step N" by name alone. A repo on this
+# single-issue shape was reporting no planning evidence at all: every design
+# doc, review report and ledger written there was invisible, so an issue
+# worked on for a full day showed up with whatever its branch or a single
+# commit happened to prove.
 #
 # Matched one path component at a time rather than as a path pattern, because
 # the position matters — see _flat_issue_id for which component is eligible
@@ -476,8 +479,14 @@ class ActivityHandler:
             # matcher, and a 3-layer path must not be double-counted by it
             # either. A new shape goes in before the bare-numeric matcher,
             # which has to stay last since it is the most permissive.
+            # A path under a blocklisted top-level directory
+            # (_PLANNING_NON_ISSUE_DIRS) is not read as an "issues/"
+            # declaration even when the regex matches — see that constant's
+            # comment. Falls through rather than `continue`s so a legacy
+            # planning/reviews/MR<N>-review.yaml still reaches the MR
+            # matcher below.
             issue_match = _ISSUE_FOLDER_RE.search(rel_posix)
-            if issue_match:
+            if issue_match and not self._in_non_issue_dir(rel_posix):
                 issue_id = int(issue_match.group(1))
                 # The zero floor is a validity check (GitLab iids are
                 # 1-based, so issue 0 cannot exist), which holds wherever an
@@ -507,20 +516,34 @@ class ActivityHandler:
         return issue_counts, mr_counts
 
     @staticmethod
+    def _in_non_issue_dir(rel_posix: str) -> bool:
+        """Return whether `rel_posix` sits under a blocklisted top-level
+        planning directory (see _PLANNING_NON_ISSUE_DIRS). Shared by the
+        3-layer issue_match branch in _scan_planning_tree and by
+        _flat_issue_id below, so the parts[1] position check has one
+        definition rather than two that could drift apart.
+        """
+        return rel_posix.split("/")[1] in _PLANNING_NON_ISSUE_DIRS
+
+    @staticmethod
     def _flat_issue_id(rel_posix: str) -> Optional[int]:
         """Return the issue id for a 2-layer planning path, or None.
 
-        Eligible position is exactly one component deep inside the goal
-        folder — planning/<goal>/<N>-<slug>/... — which is where the
-        2-layer convention puts an issue folder. Deeper components are not
-        considered: the other sanctioned 2-layer shape,
-        planning/<goal>/<work-slug>/<step-or-issue-name>/, holds either a
-        step folder or an issue folder at that same depth, and a bare
-        <N>-<slug> name there is ambiguous between "step N" and "issue N" —
-        the module's own fixture, planning/goal/rollout/2-second-step, is
-        exactly that ambiguity. No rule keyed on the name alone resolves
-        it, so the chosen response is to attribute nothing there rather
-        than risk a false positive in either direction.
+        Attribution keys on the component directly inside the goal folder
+        — planning/<goal>/<N>-<slug>/... — never on anything deeper: every
+        file at any depth below an eligible <N>-<slug> component counts
+        toward that component's id, including a file inside a further
+        nested step-or-issue folder (planning/44-series/101-chapter-one/x.md
+        counts toward issue 44, not 101). A component one level deeper than
+        that is never itself read as an issue: the other sanctioned 2-layer
+        shape, planning/<goal>/<work-slug>/<step-or-issue-name>/, holds
+        either a step folder or an issue folder at that same depth, and a
+        bare <N>-<slug> name there is ambiguous between "step N" and "issue
+        N" — the module's own fixture, planning/goal/rollout/2-second-step,
+        is exactly that ambiguity. No rule keyed on the name alone resolves
+        it, and attributing to the deeper number is no safer than
+        attributing to the outer one, so the outer component's id is what
+        wins by construction rather than by a preference between the two.
 
         Args:
             rel_posix: Path relative to the repository root, forward slashes,
@@ -534,7 +557,7 @@ class ActivityHandler:
         # planning / goal / issue-folder / ...at least one file
         if len(parts) < 4:
             return None
-        if parts[1] in _PLANNING_NON_ISSUE_DIRS:
+        if ActivityHandler._in_non_issue_dir(rel_posix):
             return None
         candidate = parts[2]
         if _DATE_PREFIXED_COMPONENT_RE.match(candidate):

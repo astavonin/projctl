@@ -80,9 +80,9 @@ def _reflog_line(sha: str, iso_dt: str, subject: str) -> str:
     return f"{sha} HEAD@{{{iso_dt}}}: {subject}"
 
 
-def _set_mtime(path: Path, day: date, tz=_FIXED_TZ) -> None:
-    """Set a file's mtime to local noon on `day`, in `tz`."""
-    ts = datetime.combine(day, time(12, 0), tzinfo=tz).timestamp()
+def _set_mtime(path: Path, day: date, tz=_FIXED_TZ, at: time = time(12, 0)) -> None:
+    """Set a file's mtime to local time `at` on `day`, in `tz`."""
+    ts = datetime.combine(day, at, tzinfo=tz).timestamp()
     os.utime(path, (ts, ts))
 
 
@@ -598,8 +598,14 @@ class TestScanPlanningTree:
         a disambiguation guard, so unlike the date guard and digit cap it
         also applies to the 3-layer issues/<N>-<slug>/ shape — '0-triage'
         there is no more a real issue folder than it is in the 2-layer
-        shape above."""
-        issue_dir = tmp_path / "planning" / "epic" / "milestone-01" / "issues" / "0-triage"
+        shape above. The extra '99-epicish' component (the same spelling
+        the double-count fixture below uses) makes the `continue` after the
+        3-layer branch observable: without it, a rejected zero id would
+        fall through past the 3-layer branch and be read as issue 99 from
+        that component instead."""
+        issue_dir = (
+            tmp_path / "planning" / "goal" / "99-epicish" / "milestone-01" / "issues" / "0-triage"
+        )
         issue_dir.mkdir(parents=True)
         target = issue_dir / "notes.md"
         target.write_text("x")
@@ -982,6 +988,94 @@ class TestScanPlanningTree:
 
         assert issue_counts == {}
         assert mr_counts == {}
+
+    def test_file_mtimed_before_local_noon_still_attributes_to_the_target_day(
+        self, tmp_path: Path
+    ) -> None:
+        """Pins `_mtime_on_date`'s `.astimezone(self._tz)` conversion. Every
+        other fixture in this suite is mtimed at local noon, which falls on
+        the same calendar day whether or not the mtime is converted to local
+        time first (under this suite's UTC+6 fixture, noon local is 06:00
+        UTC — same day either way). 02:00 local is 20:00 UTC the *previous*
+        day, so only this fixture can tell the converted and unconverted
+        results apart."""
+        issue_dir = tmp_path / "planning" / "goal" / "70-thing"
+        issue_dir.mkdir(parents=True)
+        target = issue_dir / "notes.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY, at=time(2, 0))
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, _mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {70: 1}
+
+    def test_numerically_named_work_slug_claims_a_nested_issue_folders_file(
+        self, tmp_path: Path
+    ) -> None:
+        """A numerically-named work-slug claims every file beneath it,
+        including a nested issue folder's — attribution keys on the
+        component directly inside the goal folder, never on a deeper one.
+        This is the documented consequence of keying on parts[2]:
+        preferring the deeper number would reopen the step-vs-issue
+        ambiguity _flat_issue_id exists to avoid, since a nested
+        <N>-<slug> cannot be told apart from "step N" by name alone
+        either."""
+        nested_dir = tmp_path / "planning" / "book" / "44-kernel-series" / "101-chapter-one"
+        nested_dir.mkdir(parents=True)
+        target = nested_dir / "design.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, _mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {44: 1}
+
+    @pytest.mark.parametrize(
+        "non_issue_dir",
+        ["reviews", "reviews-orphan", "tickets"],
+    )
+    def test_blocklisted_top_level_dir_wins_over_a_nested_issues_segment(
+        self, tmp_path: Path, non_issue_dir: str
+    ) -> None:
+        """A blocklisted top-level directory holds no issue evidence in any
+        shape — not even one with a literal 'issues/<N>-<slug>/' segment
+        nested below it. Before this guard, `_ISSUE_FOLDER_RE` ran first
+        and claimed these paths as issue evidence regardless of
+        `_PLANNING_NON_ISSUE_DIRS`, since that blocklist was applied only
+        inside `_flat_issue_id`."""
+        issue_dir = tmp_path / "planning" / non_issue_dir / "archive" / "issues" / "42-real"
+        issue_dir.mkdir(parents=True)
+        target = issue_dir / "notes.md"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {}
+        assert mr_counts == {}
+
+    def test_legacy_top_level_reviews_mr_file_still_counts_as_mr_evidence(
+        self, tmp_path: Path
+    ) -> None:
+        """The blocklist must gate only the two issue matchers, not the MR
+        matcher: planning/reviews/MR<N>-review.yaml is exactly where the
+        old-format migration leaves a legacy MR review on disk, and it must
+        still be read as MR evidence even though 'reviews' blocks issue
+        attribution for the same top-level directory."""
+        reviews_dir = tmp_path / "planning" / "reviews"
+        reviews_dir.mkdir(parents=True)
+        target = reviews_dir / "MR5-review.yaml"
+        target.write_text("x")
+        _set_mtime(target, _TARGET_DAY)
+
+        handler = ActivityHandler(tz=_FIXED_TZ, cwd=tmp_path)
+        issue_counts, mr_counts = handler._scan_planning_tree(_TARGET_DAY)  # noqa: SLF001
+
+        assert issue_counts == {}
+        assert mr_counts == {5: 1}
 
 
 # ---------------------------------------------------------------------------
