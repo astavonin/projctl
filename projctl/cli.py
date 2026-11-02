@@ -26,6 +26,7 @@ from .handlers.comment import cmd_comment
 from .handlers.ci_lint import CiLintHandler
 from .handlers.ci_run import cmd_ci_run
 from .handlers.docs_search import DocsSearchHandler
+from .handlers.label_history import LabelHistoryHandler
 from .handlers.labels import LabelsHandler
 from .handlers.note import NoteHandler
 from .handlers.merge import cmd_merge
@@ -1379,6 +1380,116 @@ def cmd_note(args) -> int:
         return 1
 
 
+def _add_history_subparser(subparsers: argparse._SubParsersAction) -> None:
+    """Register the 'history' subcommand."""
+    p = subparsers.add_parser(
+        "history",
+        help="Show an issue's label add/remove history (GitLab only)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  history issue 565
+  history issue 565 --label-prefix "Iteration::"
+  history issue 565 --left "Iteration::2"
+  history issue <url> --json
+
+Epics are rejected: GitLab serves no resource_label_events endpoint for group
+epics. Query the epic's issues instead.
+        """,
+    )
+    p.add_argument(
+        "resource_type",
+        choices=["issue", "epic"],
+        help="Type of resource to read history for",
+    )
+    p.add_argument(
+        "reference",
+        type=str,
+        help="Resource reference (number, #number/&number, or URL)",
+    )
+    p.add_argument(
+        "--label-prefix",
+        type=str,
+        default="",
+        help='Keep only labels starting with this string (e.g. "Iteration::")',
+    )
+    p.add_argument(
+        "--left",
+        type=str,
+        metavar="LABEL",
+        help="Report only whether and when this exact label was removed; " "exit 2 if it never was",
+    )
+    p.add_argument("--json", action="store_true", help="Emit JSON instead of a table")
+
+
+def cmd_history(args) -> int:
+    """Handle the 'history' subcommand.
+
+    Args:
+        args: Parsed command-line arguments.
+
+    Returns:
+        0 on success, 1 on error, 2 when --left found no removal.
+    """
+    try:
+        config_path = Path(args.config) if args.config else None
+        config = Config(config_path)
+
+        if config.platform != "gitlab":
+            logger.error("Error: 'history' command is only supported for GitLab")
+            return 1
+
+        handler = LabelHistoryHandler(config)
+
+        if args.resource_type == "epic":
+            iid = args.reference.lstrip("&").split("/")[-1]
+            logger.error("Error: %s", handler.epic_unsupported_message(iid))
+            return 1
+
+        # --left asks about one exact label, so the prefix filter would only
+        # narrow the set it searches; pass the label itself to keep the fetch
+        # small without hiding the event being looked for.
+        prefix = args.left if args.left else args.label_prefix
+        events = handler.issue_events(args.reference, label_prefix=prefix)
+
+        if args.left:
+            removal = handler.find_removal(events, args.left)
+            if not removal:
+                # "not removed" covers two different states, and conflating them
+                # hides a re-add: an issue that lost the label and regained it
+                # reads identically to one that never had it.
+                touched = any(e.label == args.left for e in events)
+                state = "still carries" if touched else "never carried"
+                if not args.json:
+                    print(f"{state} {args.left}")
+                else:
+                    print(json.dumps({"label": args.left, "removed": None, "state": state}))
+                return 2
+            if args.json:
+                print(json.dumps({"label": args.left, "removed": removal.as_dict()}))
+            else:
+                print(f"{removal.date}  removed {args.left}  by {removal.username}")
+            return 0
+
+        if args.json:
+            print(json.dumps([e.as_dict() for e in events], indent=2))
+            return 0
+
+        if not events:
+            print("No matching label events")
+            return 0
+        for event in events:
+            sign = "+" if event.action == "add" else "-"
+            print(f"{event.date}  {sign}{event.label}  {event.username}")
+        return 0
+    except FileNotFoundError as err:
+        logger.error(str(err))
+        return 1
+    except (PlatformError, ValueError) as err:
+        logger.error("Error: %s", err)
+        return 1
+
+
 def _add_merge_subparser(subparsers: argparse._SubParsersAction) -> None:
     """Register the 'merge' subcommand."""
     p = subparsers.add_parser(
@@ -2077,6 +2188,29 @@ def cmd_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def _register_subparsers(subparsers: argparse._SubParsersAction) -> None:
+    """Register every subcommand on the parser."""
+    _add_create_subparser(subparsers)
+    _add_load_subparser(subparsers)
+    _add_search_subparser(subparsers)
+    _add_comment_subparser(subparsers)
+    _add_create_mr_subparser(subparsers)
+    _add_sync_subparser(subparsers)
+    _add_update_subparser(subparsers)
+    _add_pipeline_debug_subparser(subparsers)
+    _add_artifacts_subparser(subparsers)
+    _add_wiki_subparser(subparsers)
+    _add_note_subparser(subparsers)
+    _add_history_subparser(subparsers)
+    _add_merge_subparser(subparsers)
+    _add_resolve_subparser(subparsers)
+    _add_timelog_subparser(subparsers)
+    _add_activity_subparser(subparsers)
+    _add_ci_subparser(subparsers)
+    _add_labels_subparser(subparsers)
+    _add_config_subparser(subparsers)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main entry point for the script.
 
@@ -2151,24 +2285,7 @@ Documentation:
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
-    _add_create_subparser(subparsers)
-    _add_load_subparser(subparsers)
-    _add_search_subparser(subparsers)
-    _add_comment_subparser(subparsers)
-    _add_create_mr_subparser(subparsers)
-    _add_sync_subparser(subparsers)
-    _add_update_subparser(subparsers)
-    _add_pipeline_debug_subparser(subparsers)
-    _add_artifacts_subparser(subparsers)
-    _add_wiki_subparser(subparsers)
-    _add_note_subparser(subparsers)
-    _add_merge_subparser(subparsers)
-    _add_resolve_subparser(subparsers)
-    _add_timelog_subparser(subparsers)
-    _add_activity_subparser(subparsers)
-    _add_ci_subparser(subparsers)
-    _add_labels_subparser(subparsers)
-    _add_config_subparser(subparsers)
+    _register_subparsers(subparsers)
 
     args = parser.parse_args(argv)
 
@@ -2195,6 +2312,7 @@ Documentation:
         "artifacts": cmd_artifacts,
         "wiki": cmd_wiki,
         "note": cmd_note,
+        "history": cmd_history,
         "merge": cmd_merge_dispatch,
         "resolve": cmd_resolve,
         "timelog": cmd_timelog,

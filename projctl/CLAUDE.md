@@ -568,6 +568,39 @@ projctl merge 264 263 --rebase             # fast-forward-only project
 
 **Handler:** `handlers/merge.py` — `MergeHandler` class
 
+### Label History
+
+Read an issue's label add/remove timeline. GitLab only.
+
+```bash
+projctl history issue 565
+projctl history issue 565 --label-prefix "Iteration::"
+projctl history issue 565 --left "Iteration::2"
+projctl history issue https://host/group/proj/-/issues/42 --json
+```
+
+**What it answers that a current label set cannot:** when a ticket left a scope, what it moved to, and who moved it. At iteration close-out the only surviving evidence is the event log — the issue now carries the new label and nothing records the old one. Reconstructing the same answer from planning notes misses any move nobody wrote down.
+
+**`--left LABEL` is the scriptable form.** Exit `0` and print the removal when the label is off the issue now; exit `2` and print `still carries LABEL` or `never carried LABEL` otherwise. The two exit-2 cases are kept distinct because conflating them hides a re-add. Scan a set with a shell loop over `--left`, taking exit 0 as "it left".
+
+**A re-add cancels an earlier removal.** The label's *last* event decides, not its last removal. This is not hypothetical: in one real project four issues dropped a scope label and carried it again three weeks later, and two more lost and regained it inside a single day. Reporting the stale removal listed all six as deferred while they were still in scope.
+
+**Epics are refused, not silently empty.** GitLab serves no `resource_label_events` endpoint for group epics — it answers 404, the same way the group-epic notes endpoint does — and the work-item GraphQL schema exposes current labels but not label events. `history epic &N` exits 1 naming that cause and pointing at the epic's issues, whose history is complete.
+
+**Pagination:** the call passes `--paginate` and merges pages through `run_glab_json_pages`, so an issue with more than one page of events does not silently report fewer.
+
+**Exit codes:** `0` on success, `1` on a bad reference, an API failure, a non-GitLab platform, or an epic reference, `2` when `--left` found no removal in effect.
+
+**Building a population is the caller's problem, and it is where the answers get lost.** The command is per-issue; a sweep is a shell loop over `--left`. Three ways a sweep under-reports, each measured on a real scope-departure audit:
+
+- **One project at a time.** `search issues` resolves its project from the working directory, so a sweep run from one repo sees only that repo. On a multi-repo audit the first repo accounted for roughly four fifths of the departures; the rest were spread across its siblings and invisible until the sweep was re-run from each.
+- **A frame built from current labels misses anything now unlabelled.** Taking every issue carrying a *later* scope label as the candidate set missed an eighth of the sample — those issues had moved on once more and ended up with no scope label at all, so no scope frame contains them.
+- **Epics are invisible, so a whole-epic move leaves no trace.** An epic can leave a scope carrying its issues, and that move is not provable with this command.
+
+A deferral recorded only as a milestone change is invisible by construction — this reads label events and nothing else.
+
+**Handler:** `handlers/label_history.py` — `LabelHistoryHandler` class
+
 ### Notes (Comments)
 
 Post a note (comment) to a GitLab issue, MR, or epic. GitLab only.
