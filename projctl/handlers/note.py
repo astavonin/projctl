@@ -7,7 +7,7 @@ from typing import List, Optional, Tuple
 
 from ..config import Config
 from ..exceptions import PlatformError
-from ..utils.git_helpers import parse_epic_url, parse_issue_url
+from ..utils.git_helpers import encoded_issue_target, parse_epic_url
 from ..utils.glab_runner import DRY_RUN, run_glab_json
 
 logger = logging.getLogger(__name__)
@@ -26,25 +26,6 @@ class NoteHandler:
         """
         self.config = config
         self.dry_run = dry_run
-
-    def _normalize_issue_ref(self, ref: str) -> Tuple[Optional[str], str]:
-        """Parse an issue reference into (encoded_project_path, iid).
-
-        Args:
-            ref: Issue reference (#N, N, or a full URL).
-
-        Returns:
-            Tuple of (URL-encoded project path or None, numeric iid string).
-            project path is None for local refs (#N, plain N).
-
-        Raises:
-            ValueError: If the reference cannot be parsed to a numeric iid.
-        """
-        project_path, iid = parse_issue_url(ref)
-        if not iid or not iid.isdigit():
-            raise ValueError(f"Cannot parse issue reference: {ref!r}")
-        encoded = urllib.parse.quote(project_path, safe="") if project_path else None
-        return encoded, iid
 
     def _normalize_mr_ref(self, ref: str) -> Tuple[Optional[str], str]:
         """Parse an MR reference into (encoded_project_path, iid).
@@ -115,7 +96,7 @@ class NoteHandler:
             ValueError: If the reference cannot be parsed or body is empty.
             PlatformError: If the API call fails.
         """
-        project, iid = self._normalize_issue_ref(issue_ref)
+        project, iid = encoded_issue_target(issue_ref)
         path = project if project else ":fullpath"
         endpoint = f"projects/{path}/issues/{iid}/notes"
         self._post_note(endpoint, body)

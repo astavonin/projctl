@@ -2,6 +2,7 @@
 
 import subprocess
 from pathlib import Path
+import urllib.parse
 from typing import Optional, Tuple
 
 from ..exceptions import PlatformError
@@ -43,6 +44,31 @@ def extract_host_from_url(url: str) -> str:
     if "//" in url:
         return url.split("//")[1].split("/")[0]
     return ""
+
+
+def encoded_issue_target(issue_ref: str) -> Tuple[Optional[str], str]:
+    """Parse an issue reference into (URL-encoded project path, iid).
+
+    Wraps parse_issue_url with the two steps every caller of a per-issue API
+    endpoint repeats: reject a reference that yields no numeric iid, and
+    percent-encode the project path so it can sit in a path segment. The path
+    is None for a local ref (#N or plain N), which glab resolves itself via
+    `:fullpath`.
+
+    Args:
+        issue_ref: Issue reference (#N, N, or a full URL).
+
+    Returns:
+        Tuple of (encoded project path or None, numeric iid string).
+
+    Raises:
+        ValueError: If the reference cannot be parsed to a numeric iid.
+    """
+    project_path, iid = parse_issue_url(issue_ref)
+    if not iid or not iid.isdigit():
+        raise ValueError(f"Cannot parse issue reference: {issue_ref!r}")
+    encoded = urllib.parse.quote(project_path, safe="") if project_path else None
+    return encoded, iid
 
 
 def parse_issue_url(issue_ref: str) -> Tuple[Optional[str], Optional[str]]:
