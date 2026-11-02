@@ -2747,5 +2747,78 @@ class TestCmdUpdateStatusValidation:
                 ]
             )
         assert result == 1
-        assert mock_run.call_count == 0
         assert "not supported on GitHub" in caplog.text
+        assert mock_run.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# cmd_update — non-link issue fields must reach update_issue
+# ---------------------------------------------------------------------------
+
+
+class TestCmdUpdateNonLinkFieldsReachUpdateIssue:
+    """Each of these flags gates whether `cmd_update` calls `update_issue`
+    at all (the `non_link_update` list). Dropping one from that list makes
+    `projctl update issue N --<flag> <value>` call nothing and exit 0 with
+    no output — the same silent-no-op shape `--weight 0` had before it was
+    fixed. `--title`, `--no-milestone`, `--weight` and `--status` already
+    have their own alone-tests elsewhere; this covers the remaining eight.
+    """
+
+    @pytest.mark.parametrize(
+        "flag_args, marker",
+        [
+            (["--description", "New desc"], "'description': 'New desc'"),
+            (["--add-label", "type::bug"], "add: ['type::bug']"),
+            (["--remove-label", "type::feature"], "remove: ['type::feature']"),
+            (["--assignee", "alice"], "resolve user: alice"),
+            (["--milestone", "v2.0"], "resolve milestone: v2.0"),
+            (["--state", "close"], "'state_event': 'close'"),
+            (["--due-date", "2026-04-01"], "'due_date': '2026-04-01'"),
+        ],
+    )
+    def test_non_link_field_alone_reaches_update_issue(
+        self, new_config_path: Path, capsys, flag_args: list, marker: str
+    ) -> None:
+        """Each flag alone must produce the dry-run preview `update_issue`
+        itself prints for that field — a marker that only appears if the
+        call was actually reached, not merely that the command exited 0."""
+        result, mock_run = _run_cli(
+            [
+                "projctl",
+                "--config",
+                str(new_config_path),
+                "update",
+                "issue",
+                "231",
+                *flag_args,
+                "--dry-run",
+            ]
+        )
+        assert result == 0
+        out = capsys.readouterr().out
+        assert "Would PUT" in out
+        assert marker in out
+        assert mock_run.call_count == 0
+
+    def test_epic_alone_reaches_update_issue(self, new_config_path: Path, capsys) -> None:
+        """`--epic` is absent from `update_issue`'s own `has_put_fields`
+        list, so it prints no "Would PUT" line — its distinct epic-assign
+        dry-run line is what proves the call was reached instead."""
+        result, mock_run = _run_cli(
+            [
+                "projctl",
+                "--config",
+                str(new_config_path),
+                "update",
+                "issue",
+                "231",
+                "--epic",
+                "&47",
+                "--dry-run",
+            ]
+        )
+        assert result == 0
+        out = capsys.readouterr().out
+        assert "Would assign issue #231 to epic &47" in out
+        assert mock_run.call_count == 0
