@@ -4,7 +4,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
-import pytest
 import yaml
 
 from projctl.cli import cmd_create, cmd_load, cmd_search, cmd_create_mr_dispatch

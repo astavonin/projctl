@@ -2,13 +2,11 @@
 
 import subprocess
 from pathlib import Path
-from typing import Any, Dict
 from unittest.mock import Mock, patch
 
 import pytest
 
 from projctl.config import Config
-from projctl.exceptions import PlatformError
 from projctl.handlers.creator import EpicIssueCreator
 
 

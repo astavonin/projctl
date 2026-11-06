@@ -52,7 +52,7 @@ class TestCreateEpic:
             "description": "# Description\n\nEpic description.",
         }
 
-        result = creator.create_epic(epic_config)
+        creator.create_epic(epic_config)
 
         # Verify glab api was called
         mock_run.assert_called_once()
@@ -92,7 +92,7 @@ class TestCreateEpic:
             "description": "# Description\n\nEpic description.",
         }
 
-        result = creator.create_epic(epic_config)
+        creator.create_epic(epic_config)
 
         # No actual command execution in dry run
         mock_run.assert_not_called()

@@ -2,7 +2,6 @@
 
 from typing import Any, Dict
 
-import pytest
 
 from projctl.utils.config_migration import transform_issue_template
 

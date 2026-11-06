@@ -30,7 +30,6 @@ from projctl.handlers.sync import (
     _SyncPaths,
     _assert_exclude_shape,
     _claude_memory_path,
-    _claude_projects_root,
     _encode_repo_path,
     _is_timestamp_or_perms_only,
     _parse_itemize_line,
@@ -1880,9 +1879,6 @@ class TestMemorySync:
         finally:
             os.chdir(orig_cwd)
 
-        # Derive the memory paths from what the handler computed.
-        local_mem = handler.paths.gdrive_base.parent  # not the memory — use repo root
-        local_mem = handler.gdrive_memory_path  # gdrive side
         # The local memory path is ~/.claude/projects/<encoded-repo>/memory — we need to
         # create it and register it on the handler directly for test purposes.
         local_memory = tmp_path / "local-memory"
@@ -1958,7 +1954,6 @@ class TestMemorySync:
     def test_push_memory_leg_failure_propagates(self, tmp_path: Path) -> None:
         """push() propagates PlatformError from the memory leg after planning succeeds."""
         handler = self._make_bare_handler_with_memory(tmp_path, memory_present=True)
-        printed: list[str] = []
         call_count = [0]
 
         def fake_run_rsync(source: Path, target: Path, description: str, **kwargs) -> None:

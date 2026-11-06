@@ -25,9 +25,7 @@ def _args(**kwargs) -> types.SimpleNamespace:
     return types.SimpleNamespace(**defaults)
 
 
-def _config(
-    mr_sections=None, mr_fields=None, default_reviewers=None, allowed_labels=None
-) -> Mock:
+def _config(mr_sections=None, mr_fields=None, default_reviewers=None, allowed_labels=None) -> Mock:
     """Build a mock Config that returns the given MR required sections and required fields.
 
     ``allowed_labels`` defaults to ``None`` (no label validation configured),
@@ -213,17 +211,13 @@ class TestValidateMrArgsEmptySections:
 
     def test_empty_required_sections_no_exception(self) -> None:
         """required_sections=[] means no description validation; even empty description passes."""
-        # Arrange
-        args = _args(title="My MR", description=None, fill=False)
+        # Arrange — a description that contains none of the required sections, since
+        # a description-absent guard fires before the section check and would mask it.
         config = _config(mr_sections=[])
+        args = _args(title="My MR", description="No sections here", fill=False)
 
-        # Act / Assert — description check is skipped when sections is empty, but
-        # the description-absent guard fires first.  This test verifies the
-        # documented behaviour: title check still fires, description check fires.
-        # To verify "no section check", provide a description with no sections.
-        args2 = _args(title="My MR", description="No sections here", fill=False)
-        # Should not raise because required_sections is empty
-        validate_mr_args(args2, config)
+        # Act / Assert — should not raise, because required_sections is empty
+        validate_mr_args(args, config)
 
 
 class TestValidateMrArgsRequiredFields:
@@ -292,9 +286,7 @@ class TestValidateMrArgsLabelAllowlist:
     def test_no_allowed_labels_configured_any_label_passes(self) -> None:
         """allowed=None (key absent) → validation is a no-op regardless of label content."""
         # Arrange
-        args = _args(
-            title="My MR", description=_VALID_DESCRIPTION, label=["arbitrary::whatever"]
-        )
+        args = _args(title="My MR", description=_VALID_DESCRIPTION, label=["arbitrary::whatever"])
         config = _config(allowed_labels=None)
 
         # Act / Assert — no exception
@@ -457,9 +449,7 @@ class TestMergeDefaultReviewers:
     def test_multiple_defaults_multiple_cli_order_preserved(self) -> None:
         """CLI=[bob, carol], defaults=[alice, bob] → ['bob', 'carol', 'alice'] (bob deduped)."""
         # Arrange
-        args = _args(
-            title="My MR", description=_VALID_DESCRIPTION, reviewer=["bob", "carol"]
-        )
+        args = _args(title="My MR", description=_VALID_DESCRIPTION, reviewer=["bob", "carol"])
         config = _config(default_reviewers=["alice", "bob"])
 
         # Act

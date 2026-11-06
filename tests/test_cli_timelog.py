@@ -37,9 +37,10 @@ def _add_args(**overrides) -> SimpleNamespace:
 @pytest.fixture(name="handler_cls")
 def handler_cls_fixture():
     """Patch Config (defaulting to gitlab) and TimelogHandler; yield the handler class mock."""
-    with patch("projctl.cli.Config") as mock_config_cls, patch(
-        "projctl.cli.TimelogHandler"
-    ) as mock_handler_cls:
+    with (
+        patch("projctl.cli.Config") as mock_config_cls,
+        patch("projctl.cli.TimelogHandler") as mock_handler_cls,
+    ):
         mock_config_cls.return_value.platform = "gitlab"
         yield mock_handler_cls
 
@@ -49,9 +50,10 @@ class TestPlatformGate:
 
     def test_github_platform_returns_one(self) -> None:
         """A github platform config exits 1 and names the config setting, not a glab transport error."""
-        with patch("projctl.cli.Config") as mock_config_cls, patch(
-            "projctl.cli.TimelogHandler"
-        ) as mock_handler_cls:
+        with (
+            patch("projctl.cli.Config") as mock_config_cls,
+            patch("projctl.cli.TimelogHandler") as mock_handler_cls,
+        ):
             mock_config_cls.return_value.platform = "github"
 
             rc = cmd_timelog(_args())
@@ -145,12 +147,15 @@ class TestAbsentConfigFallback:
 
     def test_no_config_anywhere_without_explicit_flag_still_runs(self) -> None:
         """No config file found and no --config given: the command still runs."""
-        with patch(
-            "projctl.cli.Config",
-            side_effect=FileNotFoundError(
-                "No config file found. Searched:\n  - ./projctl.yaml\n  - ~/.config/projctl/config.yaml"
+        with (
+            patch(
+                "projctl.cli.Config",
+                side_effect=FileNotFoundError(
+                    "No config file found. Searched:\n  - ./projctl.yaml\n  - ~/.config/projctl/config.yaml"
+                ),
             ),
-        ), patch("projctl.cli.TimelogHandler") as mock_handler_cls:
+            patch("projctl.cli.TimelogHandler") as mock_handler_cls,
+        ):
             rc = cmd_timelog(_args(date="2026-08-05"))
 
         assert rc == 0
@@ -159,10 +164,13 @@ class TestAbsentConfigFallback:
 
     def test_explicit_missing_config_path_is_still_a_hard_error(self) -> None:
         """An explicitly-named --config path that does not exist is never swallowed."""
-        with patch(
-            "projctl.cli.Config",
-            side_effect=FileNotFoundError("Config file not found: /nonexistent/projctl.yaml"),
-        ), patch("projctl.cli.TimelogHandler") as mock_handler_cls:
+        with (
+            patch(
+                "projctl.cli.Config",
+                side_effect=FileNotFoundError("Config file not found: /nonexistent/projctl.yaml"),
+            ),
+            patch("projctl.cli.TimelogHandler") as mock_handler_cls,
+        ):
             rc = cmd_timelog(_args(config="/nonexistent/projctl.yaml"))
 
         assert rc == 1
@@ -203,9 +211,10 @@ class TestArgparseWiring:
 
     def test_real_parser_wires_date_and_to_to_handler_report(self) -> None:
         """An argparse dest mismatch would leave handler.report() called with the wrong values."""
-        with patch("projctl.cli.Config") as mock_config_cls, patch(
-            "projctl.cli.TimelogHandler"
-        ) as mock_handler_cls:
+        with (
+            patch("projctl.cli.Config") as mock_config_cls,
+            patch("projctl.cli.TimelogHandler") as mock_handler_cls,
+        ):
             mock_config_cls.return_value.platform = "gitlab"
 
             rc = main(["timelog", "2026-08-05", "--to", "2026-08-12"])
@@ -215,9 +224,10 @@ class TestArgparseWiring:
 
     def test_real_parser_defaults_date_and_to_to_none(self) -> None:
         """The bare 'timelog' subcommand with no positional or --to defaults both to None."""
-        with patch("projctl.cli.Config") as mock_config_cls, patch(
-            "projctl.cli.TimelogHandler"
-        ) as mock_handler_cls:
+        with (
+            patch("projctl.cli.Config") as mock_config_cls,
+            patch("projctl.cli.TimelogHandler") as mock_handler_cls,
+        ):
             mock_config_cls.return_value.platform = "gitlab"
 
             rc = main(["timelog"])
@@ -416,9 +426,10 @@ class TestTimelogAddPlatformGate:
 
     def test_github_platform_rejects_add_before_constructing_handler(self) -> None:
         """A github platform config exits 1 for 'add' without ever building a handler."""
-        with patch("projctl.cli.Config") as mock_config_cls, patch(
-            "projctl.cli.TimelogHandler"
-        ) as mock_handler_cls:
+        with (
+            patch("projctl.cli.Config") as mock_config_cls,
+            patch("projctl.cli.TimelogHandler") as mock_handler_cls,
+        ):
             mock_config_cls.return_value.platform = "github"
 
             rc = cmd_timelog(_add_args())
@@ -463,10 +474,13 @@ class TestTimelogAddAbsentConfigFallback:
 
     def test_no_config_anywhere_without_explicit_flag_still_runs(self) -> None:
         """No config file found and no --config given: 'add' still runs."""
-        with patch(
-            "projctl.cli.Config",
-            side_effect=FileNotFoundError("No config file found."),
-        ), patch("projctl.cli.TimelogHandler") as mock_handler_cls:
+        with (
+            patch(
+                "projctl.cli.Config",
+                side_effect=FileNotFoundError("No config file found."),
+            ),
+            patch("projctl.cli.TimelogHandler") as mock_handler_cls,
+        ):
             rc = cmd_timelog(_add_args())
 
         assert rc == 0
@@ -475,10 +489,13 @@ class TestTimelogAddAbsentConfigFallback:
     def test_explicit_missing_config_path_is_still_a_hard_error(self) -> None:
         """An explicitly-named --config path that does not exist is never swallowed for 'add'
         either — matches the report form's existing behaviour exactly."""
-        with patch(
-            "projctl.cli.Config",
-            side_effect=FileNotFoundError("Config file not found: /nonexistent/projctl.yaml"),
-        ), patch("projctl.cli.TimelogHandler") as mock_handler_cls:
+        with (
+            patch(
+                "projctl.cli.Config",
+                side_effect=FileNotFoundError("Config file not found: /nonexistent/projctl.yaml"),
+            ),
+            patch("projctl.cli.TimelogHandler") as mock_handler_cls,
+        ):
             rc = cmd_timelog(_add_args(config="/nonexistent/projctl.yaml"))
 
         assert rc == 1
@@ -490,9 +507,10 @@ class TestTimelogAddArgparseWiring:
 
     def test_real_parser_wires_add_target_duration_to_handler(self) -> None:
         """'timelog add 478 2h' reaches handler.add() with the right positional values."""
-        with patch("projctl.cli.Config") as mock_config_cls, patch(
-            "projctl.cli.TimelogHandler"
-        ) as mock_handler_cls:
+        with (
+            patch("projctl.cli.Config") as mock_config_cls,
+            patch("projctl.cli.TimelogHandler") as mock_handler_cls,
+        ):
             mock_config_cls.return_value.platform = "gitlab"
 
             rc = main(["timelog", "add", "478", "2h"])
@@ -505,9 +523,10 @@ class TestTimelogAddArgparseWiring:
         flags forwarded, proving the argparse dest names (log_date, dry_run) are wired
         correctly — a dest mismatch here would be invisible to the hand-built SimpleNamespace
         tests above."""
-        with patch("projctl.cli.Config") as mock_config_cls, patch(
-            "projctl.cli.TimelogHandler"
-        ) as mock_handler_cls:
+        with (
+            patch("projctl.cli.Config") as mock_config_cls,
+            patch("projctl.cli.TimelogHandler") as mock_handler_cls,
+        ):
             mock_config_cls.return_value.platform = "gitlab"
 
             rc = main(["timelog", "add", "!235", "1h 30m", "--date", "2026-08-05", "--dry-run"])
@@ -521,9 +540,10 @@ class TestTimelogAddArgparseWiring:
         """Adding the target/duration positionals must not disturb the pre-existing report
         form's argparse wiring — this is the exact scenario the read-path baseline
         (1002 passed) depends on staying green."""
-        with patch("projctl.cli.Config") as mock_config_cls, patch(
-            "projctl.cli.TimelogHandler"
-        ) as mock_handler_cls:
+        with (
+            patch("projctl.cli.Config") as mock_config_cls,
+            patch("projctl.cli.TimelogHandler") as mock_handler_cls,
+        ):
             mock_config_cls.return_value.platform = "gitlab"
 
             rc = main(["timelog", "2026-08-05", "--to", "2026-08-12"])

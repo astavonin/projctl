@@ -4,9 +4,7 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-import pytest
 
-from projctl.exceptions import PlatformError
 from projctl.handlers.github_mr_handler import cmd_create_pr
 
 
@@ -114,9 +112,7 @@ class TestCreatePrErrorPaths:
     """Error path tests for cmd_create_pr."""
 
     @patch("subprocess.run")
-    def test_create_pr_returns_1_on_platform_error(
-        self, mock_run: Mock, make_mr_config
-    ) -> None:
+    def test_create_pr_returns_1_on_platform_error(self, mock_run: Mock, make_mr_config) -> None:
         """PlatformError from run_gh_command returns exit code 1."""
         mock_run.side_effect = subprocess.CalledProcessError(
             1, ["gh", "pr", "create"], stderr="authentication required"
@@ -127,9 +123,7 @@ class TestCreatePrErrorPaths:
         assert result == 1
 
     @patch("subprocess.run")
-    def test_create_pr_returns_1_on_os_error(
-        self, mock_run: Mock, make_mr_config
-    ) -> None:
+    def test_create_pr_returns_1_on_os_error(self, mock_run: Mock, make_mr_config) -> None:
         """OSError (gh not installed) returns exit code 1."""
         mock_run.side_effect = FileNotFoundError("gh not found")
         args = _args(title="Error PR", description=_VALID_DESCRIPTION)
@@ -172,9 +166,7 @@ class TestCreatePrValidation:
         mock_run.assert_not_called()
 
     @patch("subprocess.run")
-    def test_description_missing_section_returns_1(
-        self, mock_run: Mock, make_mr_config
-    ) -> None:
+    def test_description_missing_section_returns_1(self, mock_run: Mock, make_mr_config) -> None:
         """Description missing required section returns 1; subprocess never called."""
         # Arrange
         incomplete = "# Summary\n\nWhat changed.\n\n# Implementation Details\n\nHow.\n"
@@ -188,9 +180,7 @@ class TestCreatePrValidation:
         mock_run.assert_not_called()
 
     @patch("subprocess.run")
-    def test_fill_true_returns_0_subprocess_called(
-        self, mock_run: Mock, make_mr_config
-    ) -> None:
+    def test_fill_true_returns_0_subprocess_called(self, mock_run: Mock, make_mr_config) -> None:
         """fill=True bypasses validation and calls subprocess."""
         # Arrange
         mock_run.return_value = Mock(

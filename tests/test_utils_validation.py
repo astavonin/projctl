@@ -1,6 +1,6 @@
 """Tests for projctl.utils.validation module."""
 
-from typing import List, Optional
+from typing import List
 
 import pytest
 

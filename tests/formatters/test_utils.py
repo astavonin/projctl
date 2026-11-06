@@ -1,7 +1,5 @@
 """Tests for projctl.formatters.utils module."""
 
-import pytest
-
 from projctl.formatters.utils import format_user, format_users
 
 

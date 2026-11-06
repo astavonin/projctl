@@ -1,7 +1,6 @@
 """Shared pytest fixtures for projctl tests."""
 
 import shutil
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock, Mock
@@ -344,10 +343,11 @@ def make_mr_config():
         mock = MagicMock(spec=Config)
         mock.get_default_mr_reviewers.return_value = default_reviewers or []
         mock.get_required_mr_fields.return_value = required_fields or []
-        mock.get_required_mr_sections.return_value = (
-            required_sections
-            or ["Summary", "Implementation Details", "How It Was Tested"]
-        )
+        mock.get_required_mr_sections.return_value = required_sections or [
+            "Summary",
+            "Implementation Details",
+            "How It Was Tested",
+        ]
         mock.get_allowed_labels.return_value = allowed_labels
         return mock
 

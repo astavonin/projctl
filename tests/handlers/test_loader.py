@@ -161,7 +161,7 @@ class TestLoadIssue:
 
         mock_run.return_value = Mock(stdout=mock_glab_issue_view, returncode=0)
 
-        result = loader.load_issue("#1", project="group/project")
+        loader.load_issue("#1", project="group/project")
 
         # Verify project was encoded and passed in the API endpoint
         call_args = mock_run.call_args[0][0]
@@ -242,7 +242,7 @@ class TestLoadMR:
 
         mock_run.return_value = Mock(stdout=mock_glab_mr_view, returncode=0)
 
-        result = loader.load_mr("!134", project="group/project")
+        loader.load_mr("!134", project="group/project")
 
         # Verify the command was executed (project kwarg does not raise)
         mock_run.assert_called_once()

@@ -8,7 +8,6 @@ import pytest
 from projctl.exceptions import PlatformError
 from projctl.handlers.note import NoteHandler
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -67,14 +66,9 @@ class TestAddIssueNote:
         mock_run.return_value = json.dumps({"id": 42, "noteable_iid": 5})
         handler = _make_handler()
 
-        handler.add_issue_note(
-            "https://gitlab.com/group/project/-/issues/123", "hello"
-        )
+        handler.add_issue_note("https://gitlab.com/group/project/-/issues/123", "hello")
 
-        assert (
-            _endpoint_from_call(mock_run)
-            == "projects/group%2Fproject/issues/123/notes"
-        )
+        assert _endpoint_from_call(mock_run) == "projects/group%2Fproject/issues/123/notes"
 
     @patch(_PATCH_PATH)
     def test_add_issue_note_url_with_fragment(self, mock_run: MagicMock) -> None:
@@ -82,14 +76,9 @@ class TestAddIssueNote:
         mock_run.return_value = json.dumps({"id": 42, "noteable_iid": 5})
         handler = _make_handler()
 
-        handler.add_issue_note(
-            "https://gitlab.com/group/project/-/issues/123#note_456", "hello"
-        )
+        handler.add_issue_note("https://gitlab.com/group/project/-/issues/123#note_456", "hello")
 
-        assert (
-            _endpoint_from_call(mock_run)
-            == "projects/group%2Fproject/issues/123/notes"
-        )
+        assert _endpoint_from_call(mock_run) == "projects/group%2Fproject/issues/123/notes"
 
     @patch(_PATCH_PATH)
     def test_add_issue_note_body_is_sent_to_api(self, mock_run: MagicMock) -> None:
@@ -165,14 +154,9 @@ class TestAddMrNote:
         mock_run.return_value = json.dumps({"id": 99, "noteable_iid": 3})
         handler = _make_handler()
 
-        handler.add_mr_note(
-            "https://gitlab.com/group/project/-/merge_requests/789", "lgtm"
-        )
+        handler.add_mr_note("https://gitlab.com/group/project/-/merge_requests/789", "lgtm")
 
-        assert (
-            _endpoint_from_call(mock_run)
-            == "projects/group%2Fproject/merge_requests/789/notes"
-        )
+        assert _endpoint_from_call(mock_run) == "projects/group%2Fproject/merge_requests/789/notes"
 
     @patch(_PATCH_PATH)
     def test_add_mr_note_url_with_fragment(self, mock_run: MagicMock) -> None:
@@ -184,10 +168,7 @@ class TestAddMrNote:
             "https://gitlab.com/group/project/-/merge_requests/789#note_123", "lgtm"
         )
 
-        assert (
-            _endpoint_from_call(mock_run)
-            == "projects/group%2Fproject/merge_requests/789/notes"
-        )
+        assert _endpoint_from_call(mock_run) == "projects/group%2Fproject/merge_requests/789/notes"
 
     @patch(_PATCH_PATH)
     def test_add_mr_note_url_with_query(self, mock_run: MagicMock) -> None:
@@ -195,14 +176,9 @@ class TestAddMrNote:
         mock_run.return_value = json.dumps({"id": 99, "noteable_iid": 3})
         handler = _make_handler()
 
-        handler.add_mr_note(
-            "https://gitlab.com/g/p/-/merge_requests/789?diff_id=5", "lgtm"
-        )
+        handler.add_mr_note("https://gitlab.com/g/p/-/merge_requests/789?diff_id=5", "lgtm")
 
-        assert (
-            _endpoint_from_call(mock_run)
-            == "projects/g%2Fp/merge_requests/789/notes"
-        )
+        assert _endpoint_from_call(mock_run) == "projects/g%2Fp/merge_requests/789/notes"
 
     @patch(_PATCH_PATH)
     def test_add_mr_note_body_is_sent_to_api(self, mock_run: MagicMock) -> None:
@@ -227,36 +203,28 @@ class TestAddMrNote:
         handler = _make_handler()
 
         with pytest.raises(ValueError):
-            handler.add_mr_note(
-                "https://gitlab.com/g/p/-/merge_requests/abc", "hello"
-            )
+            handler.add_mr_note("https://gitlab.com/g/p/-/merge_requests/abc", "hello")
 
     def test_add_mr_note_url_empty_iid_raises(self) -> None:
         """URL with trailing slash and no iid raises ValueError."""
         handler = _make_handler()
 
         with pytest.raises(ValueError):
-            handler.add_mr_note(
-                "https://gitlab.com/g/p/-/merge_requests/", "hello"
-            )
+            handler.add_mr_note("https://gitlab.com/g/p/-/merge_requests/", "hello")
 
     def test_add_mr_note_url_no_project_segment_raises(self) -> None:
         """URL with no group/project path (bare host) raises ValueError."""
         handler = _make_handler()
 
         with pytest.raises(ValueError):
-            handler.add_mr_note(
-                "https://gitlab.com/-/merge_requests/123", "hello"
-            )
+            handler.add_mr_note("https://gitlab.com/-/merge_requests/123", "hello")
 
     def test_add_mr_note_invalid_url_format(self) -> None:
         """URL with no '/-/merge_requests/' segment raises ValueError."""
         handler = _make_handler()
 
         with pytest.raises(ValueError):
-            handler.add_mr_note(
-                "https://gitlab.com/group/project/-/issues/5", "hello"
-            )
+            handler.add_mr_note("https://gitlab.com/group/project/-/issues/5", "hello")
 
     def test_add_mr_note_empty_body(self) -> None:
         """Empty body raises ValueError."""
@@ -339,9 +307,7 @@ class TestErrorHandling:
     """Tests for NoteHandler error paths."""
 
     @patch(_PATCH_PATH)
-    def test_post_note_non_json_response_raises_platform_error(
-        self, mock_run: MagicMock
-    ) -> None:
+    def test_post_note_non_json_response_raises_platform_error(self, mock_run: MagicMock) -> None:
         """Non-JSON glab output raises PlatformError."""
         mock_run.return_value = "<html>error</html>"
         handler = _make_handler()
@@ -350,9 +316,7 @@ class TestErrorHandling:
             handler.add_issue_note("123", "hello")
 
     @patch(_PATCH_PATH)
-    def test_post_note_empty_response_raises_platform_error(
-        self, mock_run: MagicMock
-    ) -> None:
+    def test_post_note_empty_response_raises_platform_error(self, mock_run: MagicMock) -> None:
         """Empty glab response raises PlatformError."""
         mock_run.return_value = ""
         handler = _make_handler()
@@ -361,9 +325,7 @@ class TestErrorHandling:
             handler.add_issue_note("123", "hello")
 
     @patch(_PATCH_PATH)
-    def test_post_note_truncated_json_raises_platform_error(
-        self, mock_run: MagicMock
-    ) -> None:
+    def test_post_note_truncated_json_raises_platform_error(self, mock_run: MagicMock) -> None:
         """Truncated JSON response raises PlatformError."""
         mock_run.return_value = '{"id":'
         handler = _make_handler()
@@ -574,7 +536,7 @@ def _graphql_query_from_call(mock_run: MagicMock) -> str:
     args = mock_run.call_args[0][0]
     for arg in args:
         if arg.startswith("query="):
-            return arg[len("query="):]
+            return arg[len("query=") :]
     return ""
 
 
@@ -586,7 +548,9 @@ class TestAddEpicNote:
         """`&64` reference resolves work_item_id via REST, then posts via GraphQL."""
         mock_run.side_effect = [
             json.dumps({"iid": 64, "work_item_id": 195684}),
-            json.dumps({"data": {"createNote": {"note": {"id": "gid://gitlab/Note/1"}, "errors": []}}}),
+            json.dumps(
+                {"data": {"createNote": {"note": {"id": "gid://gitlab/Note/1"}, "errors": []}}}
+            ),
         ]
         handler = _make_epic_handler()
 
@@ -608,7 +572,9 @@ class TestAddEpicNote:
         """Plain numeric ref (no & prefix) is accepted."""
         mock_run.side_effect = [
             json.dumps({"iid": 64, "work_item_id": 195684}),
-            json.dumps({"data": {"createNote": {"note": {"id": "gid://gitlab/Note/1"}, "errors": []}}}),
+            json.dumps(
+                {"data": {"createNote": {"note": {"id": "gid://gitlab/Note/1"}, "errors": []}}}
+            ),
         ]
         handler = _make_epic_handler()
 
@@ -621,13 +587,13 @@ class TestAddEpicNote:
         """Full epic URL extracts the group path and ignores the config default."""
         mock_run.side_effect = [
             json.dumps({"iid": 64, "work_item_id": 195684}),
-            json.dumps({"data": {"createNote": {"note": {"id": "gid://gitlab/Note/1"}, "errors": []}}}),
+            json.dumps(
+                {"data": {"createNote": {"note": {"id": "gid://gitlab/Note/1"}, "errors": []}}}
+            ),
         ]
         handler = _make_epic_handler(default_group="wrong/group")
 
-        handler.add_epic_note(
-            "https://gitlab.com/groups/right/group/-/epics/64", "hello"
-        )
+        handler.add_epic_note("https://gitlab.com/groups/right/group/-/epics/64", "hello")
 
         first_endpoint = mock_run.call_args_list[0][0][0][1]
         assert "groups/right%2Fgroup/epics/64" == first_endpoint
@@ -637,7 +603,9 @@ class TestAddEpicNote:
         """Body text appears verbatim in the createNote mutation."""
         mock_run.side_effect = [
             json.dumps({"iid": 64, "work_item_id": 195684}),
-            json.dumps({"data": {"createNote": {"note": {"id": "gid://gitlab/Note/1"}, "errors": []}}}),
+            json.dumps(
+                {"data": {"createNote": {"note": {"id": "gid://gitlab/Note/1"}, "errors": []}}}
+            ),
         ]
         handler = _make_epic_handler()
 
@@ -650,7 +618,9 @@ class TestAddEpicNote:
         """Double-quotes and backslashes in the body are escaped for GraphQL."""
         mock_run.side_effect = [
             json.dumps({"iid": 64, "work_item_id": 195684}),
-            json.dumps({"data": {"createNote": {"note": {"id": "gid://gitlab/Note/1"}, "errors": []}}}),
+            json.dumps(
+                {"data": {"createNote": {"note": {"id": "gid://gitlab/Note/1"}, "errors": []}}}
+            ),
         ]
         handler = _make_epic_handler()
 
@@ -664,7 +634,9 @@ class TestAddEpicNote:
         """Raw LineTerminators/tabs must be escaped — GraphQL string literals forbid them."""
         mock_run.side_effect = [
             json.dumps({"iid": 64, "work_item_id": 195684}),
-            json.dumps({"data": {"createNote": {"note": {"id": "gid://gitlab/Note/1"}, "errors": []}}}),
+            json.dumps(
+                {"data": {"createNote": {"note": {"id": "gid://gitlab/Note/1"}, "errors": []}}}
+            ),
         ]
         handler = _make_epic_handler()
 
@@ -691,9 +663,7 @@ class TestAddEpicNote:
         handler = _make_epic_handler()
 
         with pytest.raises(ValueError):
-            handler.add_epic_note(
-                "https://gitlab.com/groups/g/-/epics/abc", "hello"
-            )
+            handler.add_epic_note("https://gitlab.com/groups/g/-/epics/abc", "hello")
 
     def test_add_epic_note_empty_body(self) -> None:
         """Empty body raises ValueError (checked before any API call)."""

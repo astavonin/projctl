@@ -20,9 +20,10 @@ def _args(**overrides) -> SimpleNamespace:
 @pytest.fixture(name="handler_cls")
 def handler_cls_fixture():
     """Patch Config and ArtifactsHandler in the cli namespace; yield the class mock."""
-    with patch("projctl.cli.Config", MagicMock()), patch(
-        "projctl.cli.ArtifactsHandler"
-    ) as mock_cls:
+    with (
+        patch("projctl.cli.Config", MagicMock()),
+        patch("projctl.cli.ArtifactsHandler") as mock_cls,
+    ):
         yield mock_cls
 
 

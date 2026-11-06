@@ -94,9 +94,7 @@ class TestParserWiring:
         assert main(["ci", "lint", "ci/.gitlab-ci.yml"]) == 0
         handler_cls.return_value.lint.assert_called_once_with(path="ci/.gitlab-ci.yml", ref=None)
 
-    def test_run_subcommand_dispatches_to_the_pipeline_trigger(
-        self, handler_cls: Mock
-    ) -> None:
+    def test_run_subcommand_dispatches_to_the_pipeline_trigger(self, handler_cls: Mock) -> None:
         """`ci run` must reach cmd_ci_run, not the linter."""
         with patch("projctl.cli.cmd_ci_run", return_value=0) as mock_run:
             assert main(["ci", "run", "--branch", "master"]) == 0

@@ -1,10 +1,8 @@
 """Tests for projctl.handlers.mr_handler module."""
 
-import subprocess
 from types import SimpleNamespace
 from unittest.mock import Mock, MagicMock, patch
 
-import pytest
 
 from projctl.handlers.mr_handler import cmd_create_mr
 
@@ -39,9 +37,7 @@ class TestCmdCreateMrSuccess:
     """cmd_create_mr returns 0 and calls subprocess for valid input."""
 
     @patch("subprocess.run")
-    def test_valid_title_and_description_returns_0(
-        self, mock_run: Mock, make_mr_config
-    ) -> None:
+    def test_valid_title_and_description_returns_0(self, mock_run: Mock, make_mr_config) -> None:
         """Valid title and description returns 0 and subprocess is called."""
         # Arrange
         mock_run.return_value = Mock(
@@ -60,9 +56,7 @@ class TestCmdCreateMrSuccess:
         mock_run.assert_called_once()
 
     @patch("subprocess.run")
-    def test_fill_flag_returns_0_subprocess_called(
-        self, mock_run: Mock, make_mr_config
-    ) -> None:
+    def test_fill_flag_returns_0_subprocess_called(self, mock_run: Mock, make_mr_config) -> None:
         """fill=True skips validation and calls subprocess successfully."""
         # Arrange
         mock_run.return_value = Mock(

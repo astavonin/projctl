@@ -35,9 +35,7 @@ class TestUpdateIssueLabelValidation:
     """GithubUpdater.update_issue rejects labels not in the configured allowed list."""
 
     @patch("subprocess.run")
-    def test_unknown_add_label_raises_before_gh(
-        self, mock_run: Mock, tmp_path: Path
-    ) -> None:
+    def test_unknown_add_label_raises_before_gh(self, mock_run: Mock, tmp_path: Path) -> None:
         """--add-label with a value not in allowed → ValueError before any gh call."""
         config = _config_with_allowed(tmp_path)
         updater = GithubUpdater(config, dry_run=False)
@@ -48,9 +46,7 @@ class TestUpdateIssueLabelValidation:
         mock_run.assert_not_called()
 
     @patch("subprocess.run")
-    def test_known_add_label_passes_validation(
-        self, mock_run: Mock, tmp_path: Path
-    ) -> None:
+    def test_known_add_label_passes_validation(self, mock_run: Mock, tmp_path: Path) -> None:
         """--add-label with a value in allowed → no exception (dry-run so no subprocess)."""
         config = _config_with_allowed(tmp_path)
         updater = GithubUpdater(config, dry_run=True)
@@ -78,9 +74,7 @@ class TestUpdatePrLabelValidation:
     """GithubUpdater.update_pr rejects labels not in the configured allowed list."""
 
     @patch("subprocess.run")
-    def test_unknown_add_label_raises_before_gh(
-        self, mock_run: Mock, tmp_path: Path
-    ) -> None:
+    def test_unknown_add_label_raises_before_gh(self, mock_run: Mock, tmp_path: Path) -> None:
         """--add-label on a PR with a value not in allowed → ValueError before any gh call."""
         config = _config_with_allowed(tmp_path)
         updater = GithubUpdater(config, dry_run=False)
@@ -91,9 +85,7 @@ class TestUpdatePrLabelValidation:
         mock_run.assert_not_called()
 
     @patch("subprocess.run")
-    def test_known_add_label_passes_validation(
-        self, mock_run: Mock, tmp_path: Path
-    ) -> None:
+    def test_known_add_label_passes_validation(self, mock_run: Mock, tmp_path: Path) -> None:
         """--add-label on a PR with a value in allowed → no exception."""
         config = _config_with_allowed(tmp_path)
         updater = GithubUpdater(config, dry_run=True)

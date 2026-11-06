@@ -44,9 +44,7 @@ def _default_merge_method():
     mocked call sequences every other test depends on. Tests that care about
     fast-forward behaviour override this.
     """
-    with patch(
-        "projctl.handlers.merge.MergeHandler.project_merge_method", return_value="merge"
-    ):
+    with patch("projctl.handlers.merge.MergeHandler.project_merge_method", return_value="merge"):
         yield
 
 
@@ -232,11 +230,11 @@ class TestMergeChain:
     ) -> None:
         mock_json.side_effect = [
             _mr(iid=264, source_branch="feature/a", target_branch="master"),  # gate 264
-            _mr(iid=264, state="merged", source_branch="feature/a"),          # merge 264
-            _mr(iid=263, target_branch="feature/a"),                          # still stacked
-            _mr(iid=263, target_branch="master"),                             # retarget poll
+            _mr(iid=264, state="merged", source_branch="feature/a"),  # merge 264
+            _mr(iid=263, target_branch="feature/a"),  # still stacked
+            _mr(iid=263, target_branch="master"),  # retarget poll
             _mr(iid=263, source_branch="feature/b", target_branch="master"),  # gate 263
-            _mr(iid=263, state="merged", source_branch="feature/b"),          # merge 263
+            _mr(iid=263, state="merged", source_branch="feature/b"),  # merge 263
         ]
 
         assert _handler().merge_chain(["264", "263"]) == 0
@@ -259,10 +257,10 @@ class TestMergeChain:
         """
         mock_json.side_effect = [
             _mr(iid=264, source_branch="feature/a", target_branch="master"),  # gate 264
-            _mr(iid=264, state="merged", source_branch="feature/a"),          # merge 264
-            _mr(iid=263, target_branch="master"),                             # never stacked
+            _mr(iid=264, state="merged", source_branch="feature/a"),  # merge 264
+            _mr(iid=263, target_branch="master"),  # never stacked
             _mr(iid=263, source_branch="feature/b", target_branch="master"),  # gate 263
-            _mr(iid=263, state="merged", source_branch="feature/b"),          # merge 263
+            _mr(iid=263, state="merged", source_branch="feature/b"),  # merge 263
         ]
 
         assert _handler().merge_chain(["264", "263"]) == 0
@@ -515,10 +513,10 @@ class TestTransientMergeRejection:
         self, mock_json: MagicMock, _pages: MagicMock, _sleep: MagicMock, capsys
     ) -> None:
         mock_json.side_effect = [
-            _mr(),                                  # gate
+            _mr(),  # gate
             PlatformError("Branch cannot be merged (HTTP 422)"),
-            _mr(),                                  # re-gate
-            _mr(state="merged"),                    # retry succeeds
+            _mr(),  # re-gate
+            _mr(state="merged"),  # retry succeeds
         ]
 
         _handler().merge_one("265")
@@ -574,9 +572,7 @@ class TestTransientMergeRejection:
     def test_persistent_transient_rejection_eventually_fails(
         self, mock_json: MagicMock, _pages: MagicMock, _sleep: MagicMock
     ) -> None:
-        mock_json.side_effect = [_mr()] + [
-            PlatformError("HTTP 422"), _mr()
-        ] * 10
+        mock_json.side_effect = [_mr()] + [PlatformError("HTTP 422"), _mr()] * 10
 
         with pytest.raises(PlatformError, match="refused the merge"):
             _handler().merge_one("265")
@@ -609,8 +605,13 @@ class TestFastForwardGate:
     @patch(_PATCH_PAGES, return_value=[])
     @patch(_PATCH_JSON)
     def test_dry_run_names_the_rebase_requirement(
-        self, mock_json: MagicMock, _p: MagicMock, _mm: MagicMock, _dv: MagicMock,
-        _mask: MagicMock, capsys
+        self,
+        mock_json: MagicMock,
+        _p: MagicMock,
+        _mm: MagicMock,
+        _dv: MagicMock,
+        _mask: MagicMock,
+        capsys,
     ) -> None:
         """The dry run must explain the 422 rather than reporting a stale ok."""
         mock_json.return_value = _mr(detailed_merge_status="mergeable")
@@ -657,8 +658,13 @@ class TestRebaseIsAppliedWhereNeeded:
     @patch(_PATCH_PAGES, return_value=[])
     @patch(_PATCH_JSON)
     def test_single_mr_is_rebased_before_gating(
-        self, mock_json: MagicMock, _p: MagicMock, _mm: MagicMock,
-        mock_div: MagicMock, mock_rebase: MagicMock, _await: MagicMock
+        self,
+        mock_json: MagicMock,
+        _p: MagicMock,
+        _mm: MagicMock,
+        mock_div: MagicMock,
+        mock_rebase: MagicMock,
+        _await: MagicMock,
     ) -> None:
         """Without this, --rebase on one MR was silently a no-op and the gate blocked."""
         mock_json.side_effect = [_mr(), _mr(state="merged")]
@@ -677,8 +683,12 @@ class TestRebaseIsAppliedWhereNeeded:
     @patch(_PATCH_PAGES, return_value=[])
     @patch(_PATCH_JSON)
     def test_descendant_branch_is_not_rebased(
-        self, mock_json: MagicMock, _p: MagicMock, _mm: MagicMock,
-        _div: MagicMock, mock_rebase: MagicMock
+        self,
+        mock_json: MagicMock,
+        _p: MagicMock,
+        _mm: MagicMock,
+        _div: MagicMock,
+        mock_rebase: MagicMock,
     ) -> None:
         """A rebase costs a pipeline; do not spend one that changes nothing."""
         mock_json.side_effect = [_mr(), _mr(state="merged")]
@@ -695,8 +705,12 @@ class TestRebaseIsAppliedWhereNeeded:
     @patch(_PATCH_PAGES, return_value=[])
     @patch(_PATCH_JSON)
     def test_non_ff_project_is_never_rebased(
-        self, mock_json: MagicMock, _p: MagicMock, _mm: MagicMock,
-        _div: MagicMock, mock_rebase: MagicMock
+        self,
+        mock_json: MagicMock,
+        _p: MagicMock,
+        _mm: MagicMock,
+        _div: MagicMock,
+        mock_rebase: MagicMock,
     ) -> None:
         mock_json.side_effect = [_mr(), _mr(state="merged")]
         handler = _handler()
@@ -889,8 +903,8 @@ class TestRebase:
         self, mock_json: MagicMock, _sleep: MagicMock, capsys
     ) -> None:
         mock_json.side_effect = [
-            {},                                                    # PUT /rebase
-            {"rebase_in_progress": True},                          # still running
+            {},  # PUT /rebase
+            {"rebase_in_progress": True},  # still running
             {"rebase_in_progress": False, "target_branch": "master"},
         ]
 
@@ -900,9 +914,7 @@ class TestRebase:
 
     @patch(_PATCH_SLEEP)
     @patch(_PATCH_JSON)
-    def test_merge_error_after_rebase_raises(
-        self, mock_json: MagicMock, _sleep: MagicMock
-    ) -> None:
+    def test_merge_error_after_rebase_raises(self, mock_json: MagicMock, _sleep: MagicMock) -> None:
         """A conflict is recorded in merge_error, not in the rebase response."""
         mock_json.side_effect = [
             {},

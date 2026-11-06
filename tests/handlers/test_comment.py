@@ -14,8 +14,6 @@ from projctl.handlers.comment import (
     _apply_approval_status,
     _fetch_mr_diff_lines,
     _handle_resolve,
-    _is_already_approved_error,
-    _is_not_approved_error,
     _load_review_data,
     _parse_diff_lines,
     _parse_hunk_lines,
@@ -319,6 +317,7 @@ class TestPostInlineCommentDiffValidation:
             )
 
         # Should have fallen back to note (line not in diff, file not unchecked)
+        assert result is True
         called_cmd = mock_run.call_args[0][0]
         assert "notes" in " ".join(called_cmd)
         assert "discussions" not in " ".join(called_cmd)
@@ -437,7 +436,12 @@ class TestPostInlineFindingsDiffFetch:
         mock_post.return_value = True
 
         findings = [
-            {"severity": "High", "title": "F1", "description": "D1", "location": "src/large.py:301"},
+            {
+                "severity": "High",
+                "title": "F1",
+                "description": "D1",
+                "location": "src/large.py:301",
+            },
         ]
         _post_inline_findings(10, findings, _make_position(), dry_run=False)
 
@@ -553,7 +557,9 @@ class TestLoadReviewDataApprovalValidation:
     def test_valid_approval_changes_requested_passes(self, tmp_path) -> None:
         """approval: changes_requested is accepted without error."""
         f = tmp_path / "review.yaml"
-        f.write_text("approval: changes_requested\nfindings:\n  - title: F1\n    location: a.py:1\n")
+        f.write_text(
+            "approval: changes_requested\nfindings:\n  - title: F1\n    location: a.py:1\n"
+        )
         data, _, approval = _load_review_data(str(f))
         assert data["approval"] == "changes_requested"
         assert approval == "changes_requested"
@@ -602,7 +608,9 @@ class TestCmdCommentApprovalWiring:
 
     @patch("projctl.handlers.comment._apply_approval_status")
     @patch("projctl.handlers.comment._load_review_data")
-    def test_approval_value_forwarded_to_apply(self, mock_load: MagicMock, mock_apply: MagicMock) -> None:
+    def test_approval_value_forwarded_to_apply(
+        self, mock_load: MagicMock, mock_apply: MagicMock
+    ) -> None:
         """approval from YAML is forwarded verbatim to _apply_approval_status."""
         mock_load.return_value = ({"approval": "changes_requested"}, 42, "changes_requested")
         mock_apply.return_value = True
@@ -613,7 +621,9 @@ class TestCmdCommentApprovalWiring:
 
     @patch("projctl.handlers.comment._apply_approval_status")
     @patch("projctl.handlers.comment._load_review_data")
-    def test_missing_approval_defaults_to_approved(self, mock_load: MagicMock, mock_apply: MagicMock) -> None:
+    def test_missing_approval_defaults_to_approved(
+        self, mock_load: MagicMock, mock_apply: MagicMock
+    ) -> None:
         """When approval is absent from YAML, 'approved' is forwarded to _apply_approval_status."""
         mock_load.return_value = ({}, 42, "approved")
         mock_apply.return_value = True
@@ -624,7 +634,9 @@ class TestCmdCommentApprovalWiring:
 
     @patch("projctl.handlers.comment._apply_approval_status")
     @patch("projctl.handlers.comment._load_review_data")
-    def test_apply_failure_returns_exit_code_1(self, mock_load: MagicMock, mock_apply: MagicMock) -> None:
+    def test_apply_failure_returns_exit_code_1(
+        self, mock_load: MagicMock, mock_apply: MagicMock
+    ) -> None:
         """_apply_approval_status returning False causes cmd_comment to return 1."""
         mock_load.return_value = ({"approval": "approved"}, 42, "approved")
         mock_apply.return_value = False
@@ -635,7 +647,9 @@ class TestCmdCommentApprovalWiring:
 
     @patch("projctl.handlers.comment._apply_approval_status")
     @patch("projctl.handlers.comment._load_review_data")
-    def test_apply_success_returns_exit_code_0(self, mock_load: MagicMock, mock_apply: MagicMock) -> None:
+    def test_apply_success_returns_exit_code_0(
+        self, mock_load: MagicMock, mock_apply: MagicMock
+    ) -> None:
         """_apply_approval_status returning True causes cmd_comment to return 0."""
         mock_load.return_value = ({"approval": "approved"}, 42, "approved")
         mock_apply.return_value = True
@@ -667,7 +681,11 @@ class TestCmdCommentApprovalWiring:
         mock_apply: MagicMock,
     ) -> None:
         """When _fetch_mr_position returns None, approval is still applied after the fallback comment."""
-        mock_load.return_value = ({"approval": "approved", "findings": [{"title": "F1", "location": "a.py:1"}]}, 42, "approved")
+        mock_load.return_value = (
+            {"approval": "approved", "findings": [{"title": "F1", "location": "a.py:1"}]},
+            42,
+            "approved",
+        )
         mock_fetch_pos.return_value = None
         mock_general.return_value = 0
         mock_apply.return_value = True
@@ -748,7 +766,9 @@ class TestResolveDiscussion:
         assert mock_run.call_count == 2
 
     @patch(_PATCH_SUBPROCESS)
-    def test_put_sends_resolved_as_a_query_parameter_not_a_json_body(self, mock_run: MagicMock) -> None:
+    def test_put_sends_resolved_as_a_query_parameter_not_a_json_body(
+        self, mock_run: MagicMock
+    ) -> None:
         """GitLab answers 403 for a DiscussionNote thread when `resolved` is a JSON body.
 
         It accepts the body form for DiffNote threads, so the wrong shape worked

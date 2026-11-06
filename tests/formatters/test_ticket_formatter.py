@@ -1,8 +1,7 @@
 """Tests for projctl.formatters.ticket_formatter module."""
 
-from typing import Any, Dict, List
+from typing import Any, Dict
 
-import pytest
 
 from projctl.formatters.ticket_formatter import (
     print_epic,
