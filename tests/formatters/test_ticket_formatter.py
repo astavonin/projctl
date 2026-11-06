@@ -51,6 +51,24 @@ def _make_epic(**overrides: Any) -> Dict[str, Any]:
     return base
 
 
+def _make_epic_issue(**overrides: Any) -> Dict[str, Any]:
+    """Return a minimal issue dict as it appears in an epic or milestone listing.
+
+    Carries no 'weight' key, matching a Free-tier response and letting the
+    unweighted cases be expressed by omission rather than an explicit null.
+    """
+    base: Dict[str, Any] = {
+        "iid": 1,
+        "title": "Issue A",
+        "state": "opened",
+        "web_url": "http://x/1",
+        "assignees": [],
+        "labels": [],
+    }
+    base.update(overrides)
+    return base
+
+
 def _make_milestone(**overrides: Any) -> Dict[str, Any]:
     """Return a minimal valid milestone dict."""
     base: Dict[str, Any] = {
@@ -128,6 +146,37 @@ class TestPrintIssue:
         out = capsys.readouterr().out
         assert "Blocked By" in out
 
+    def test_print_issue_shows_weight(self, capsys) -> None:
+        """A set weight is printed as its value, with the Markdown hard break."""
+        print_issue(_make_issue(weight=3))
+        out = capsys.readouterr().out
+        # Matching through the line end pins the two-space hard break and stops
+        # this assertion also passing on a rendered weight of 30.
+        assert "**Weight:** 3  \n" in out
+
+    def test_print_issue_shows_zero_weight_as_zero(self, capsys) -> None:
+        """Weight 0 is a real estimate and must not render as N/A."""
+        print_issue(_make_issue(weight=0))
+        out = capsys.readouterr().out
+        assert "**Weight:** 0  \n" in out
+        assert "**Weight:** N/A" not in out
+
+    def test_print_issue_shows_null_weight_as_na(self, capsys) -> None:
+        """An explicit null weight (unset on the server) renders as N/A."""
+        print_issue(_make_issue(weight=None))
+        out = capsys.readouterr().out
+        assert "**Weight:** N/A  \n" in out
+
+    def test_print_issue_shows_missing_weight_as_na(self, capsys) -> None:
+        """A response with no weight key at all still prints the line, as N/A."""
+        issue = _make_issue()
+        # Guard: were `weight` added to the _make_issue base, this test would
+        # silently collapse into the explicit-null case above.
+        assert "weight" not in issue
+        print_issue(issue)
+        out = capsys.readouterr().out
+        assert "**Weight:** N/A  \n" in out
+
 
 class TestPrintIssueTimingBranches:
     """Tests for _print_timing branches via print_issue."""
@@ -195,6 +244,56 @@ class TestPrintEpic:
         out = capsys.readouterr().out
         assert "Description" in out
 
+    def test_print_epic_shows_per_issue_weight(self, capsys) -> None:
+        """Each issue in an epic group carries a Weight sub-bullet."""
+        print_epic(_make_epic(), issues=[_make_epic_issue(weight=5)])
+        out = capsys.readouterr().out
+        assert "  - Weight: 5" in out
+
+    def test_print_epic_shows_unweighted_issue_as_na(self, capsys) -> None:
+        """An issue with no weight renders N/A rather than omitting the sub-bullet."""
+        print_epic(_make_epic(), issues=[_make_epic_issue()])
+        out = capsys.readouterr().out
+        assert "  - Weight: N/A" in out
+
+    def test_print_epic_totals_weight_across_states(self, capsys) -> None:
+        """The total sums every issue, opened and closed alike."""
+        issues = [
+            _make_epic_issue(iid=1, weight=3),
+            _make_epic_issue(iid=2, weight=4, state="closed"),
+        ]
+        print_epic(_make_epic(), issues=issues)
+        out = capsys.readouterr().out
+        assert "**Total weight:** 7  \n" in out
+
+    def test_print_epic_total_discloses_unweighted_count(self, capsys) -> None:
+        """A partial sum names how many issues it could not count."""
+        issues = [_make_epic_issue(iid=1, weight=3), _make_epic_issue(iid=2)]
+        print_epic(_make_epic(), issues=issues)
+        out = capsys.readouterr().out
+        assert "**Total weight:** 3 across 1/2 issues (1 unweighted)" in out
+
+    def test_print_epic_total_on_free_tier_response_is_not_a_confident_zero(self, capsys) -> None:
+        """With no weights anywhere, the total discloses that it counted nothing."""
+        issues = [_make_epic_issue(iid=1), _make_epic_issue(iid=2)]
+        print_epic(_make_epic(), issues=issues)
+        out = capsys.readouterr().out
+        assert "**Total weight:** 0 across 0/2 issues (2 unweighted)" in out
+
+    def test_print_epic_total_omits_disclosure_when_all_weighted(self, capsys) -> None:
+        """A complete sum stays terse — no '(0 unweighted)' noise."""
+        print_epic(_make_epic(), issues=[_make_epic_issue(weight=2)])
+        out = capsys.readouterr().out
+        assert "**Total weight:** 2  \n" in out
+        assert "unweighted" not in out
+
+    def test_print_epic_zero_weight_counts_as_weighted(self, capsys) -> None:
+        """Weight 0 is an estimate, so it must not inflate the unweighted count."""
+        print_epic(_make_epic(), issues=[_make_epic_issue(weight=0)])
+        out = capsys.readouterr().out
+        assert "**Total weight:** 0  \n" in out
+        assert "unweighted" not in out
+
 
 class TestPrintMilestone:
     """Tests for print_milestone."""
@@ -214,6 +313,33 @@ class TestPrintMilestone:
         print_milestone(_make_milestone(), issues=issues, epic_map={})
         out = capsys.readouterr().out
         assert "**Progress:** 1/2 issues closed" in out
+
+    def test_print_milestone_shows_weight_on_issue_line(self, capsys) -> None:
+        """Each breakdown line carries a compact weight marker."""
+        issues = [_make_epic_issue(iid=1, weight=8)]
+        print_milestone(_make_milestone(), issues=issues, epic_map={})
+        out = capsys.readouterr().out
+        assert "- #1 Issue A `[opened]` `w:8`" in out
+
+    def test_print_milestone_shows_unweighted_issue_line_as_na(self, capsys) -> None:
+        """An unweighted breakdown line reads w:N/A rather than dropping the marker."""
+        print_milestone(_make_milestone(), issues=[_make_epic_issue()], epic_map={})
+        out = capsys.readouterr().out
+        assert "`w:N/A`" in out
+
+    def test_print_milestone_totals_weight(self, capsys) -> None:
+        """Milestone output totals the weight of its issues next to Progress."""
+        issues = [_make_epic_issue(iid=1, weight=2), _make_epic_issue(iid=2, weight=3)]
+        print_milestone(_make_milestone(), issues=issues, epic_map={})
+        out = capsys.readouterr().out
+        assert "**Total weight:** 5  \n" in out
+
+    def test_print_milestone_empty_totals_zero(self, capsys) -> None:
+        """An empty milestone totals 0 without claiming anything is unweighted."""
+        print_milestone(_make_milestone(), issues=[], epic_map={})
+        out = capsys.readouterr().out
+        assert "**Total weight:** 0  \n" in out
+        assert "unweighted" not in out
 
 
 class TestPrintMR:

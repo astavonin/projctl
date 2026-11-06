@@ -16,6 +16,31 @@ def _issue_assignee_str(issue: Dict[str, Any]) -> str:
     return "unassigned"
 
 
+def _weight_str(issue: Dict[str, Any]) -> str:
+    """Return an issue's weight for display, or 'N/A' when it carries none."""
+    weight = issue.get("weight")
+    return str(weight) if weight is not None else "N/A"
+
+
+def _print_weight_total(issues: List[Dict[str, Any]]) -> None:
+    """Print the summed weight of a list of issues, disclosing unweighted ones.
+
+    The unweighted count is always stated when non-zero: a bare sum silently
+    understates capacity, which is the one way this line could mislead.
+    """
+    weights = [issue.get("weight") for issue in issues]
+    weighted = [weight for weight in weights if weight is not None]
+    total = sum(weighted)
+    missing = len(weights) - len(weighted)
+    if missing:
+        print(
+            f"**Total weight:** {total} across {len(weighted)}/{len(weights)} issues "
+            f"({missing} unweighted)  "
+        )
+    else:
+        print(f"**Total weight:** {total}  ")
+
+
 def _print_timing(timing: Dict[str, Any]) -> None:
     """Print status and timing block for an issue."""
     current_status = timing.get("current_status")
@@ -62,6 +87,7 @@ def _print_epic_issue_group(heading: str, issues: List[Dict[str, Any]], show_lab
         url = issue.get("web_url", "")
         print(f"- [#{iid} {title}]({url})")
         print(f"  - Owner: {_issue_assignee_str(issue)}")
+        print(f"  - Weight: {_weight_str(issue)}")
         if show_labels:
             issue_labels = issue.get("labels", [])
             label_str = (
@@ -101,6 +127,11 @@ def print_issue(
 
     if issue.get("milestone"):
         print(f"**Milestone:** {issue['milestone'].get('title')}  ")
+
+    # Always printed: every issue this tool creates carries a weight, so `N/A` flags one that does not.
+    # `is not None` keeps weight 0 a real estimate rather than "no weight given".
+    weight = issue.get("weight")
+    print(f"**Weight:** {weight if weight is not None else 'N/A'}  ")
 
     if issue.get("due_date"):
         print(f"**Due Date:** {issue['due_date']}  ")
@@ -156,6 +187,8 @@ def print_epic(
     if not issues:
         print("*No issues in this epic*\n")
     else:
+        _print_weight_total(issues)
+        print()
         opened = [i for i in issues if i.get("state") == "opened"]
         closed = [i for i in issues if i.get("state") == "closed"]
         if opened:
@@ -174,7 +207,7 @@ def _print_issue_line(issue: Dict[str, Any]) -> None:
     iid = issue.get("iid")
     title = issue.get("title", "Untitled")
     state = issue.get("state", "unknown")
-    print(f"- #{iid} {title} `[{state}]`")
+    print(f"- #{iid} {title} `[{state}]` `w:{_weight_str(issue)}`")
 
 
 def _print_epic_breakdown(
@@ -232,6 +265,7 @@ def print_milestone(
     total_issues = len(issues)
     closed_count = len([i for i in issues if i.get("state") == "closed"])
     print(f"**Progress:** {closed_count}/{total_issues} issues closed  ")
+    _print_weight_total(issues)
 
     print(f"\n**Created:** {milestone.get('created_at')}  ")
     print(f"**Updated:** {milestone.get('updated_at')}  ")

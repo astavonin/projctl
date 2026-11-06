@@ -336,6 +336,12 @@ projctl load mr 134 --comments
 projctl load mr 134 --comments --json
 ```
 
+**Weight is reported by all three issue-bearing load forms.** `load issue` prints a `**Weight:**` field; `load epic` adds a `- Weight:` sub-bullet per issue; `load milestone` appends a compact `` `w:N` `` marker to each breakdown line. `load epic` and `load milestone` also print a `**Total weight:**` line — the epic's spans both the opened and closed groups, the milestone's sits beside `**Progress:**`.
+
+Every form renders a weightless issue as `N/A` rather than omitting the field, and `0` is a real estimate that never reads as `N/A` (the same `weight is not None` rule the `--weight` flag follows). `weight` is GitLab Premium, so on an instance without it every value reads `N/A` — identical to a genuinely weightless issue, whether the response omits the key or returns null. On Premium that `N/A` is worth noticing: `weight` is required on every GitLab issue this tool creates unless `common.issue_template.required_fields` explicitly opts out (see `config.py` → `get_required_issue_fields()`), so an issue lacking one was created some other way.
+
+**A total that could not count every issue says so.** `**Total weight:** 3 across 1/2 issues (1 unweighted)` is the partial form; a complete sum prints the bare total with no disclosure clause. A sum over a Free-tier response is therefore reported as `0 across 0/N issues (N unweighted)` rather than a confident `0` — the one way this line could otherwise mislead is by silently understating capacity.
+
 `--comments --json` emits the folded discussion-thread payload as JSON instead of markdown — GitLab only, and only for `load mr --comments`; rejected on GitHub, on any other resource type, or with `--comments` omitted. The payload has three key sets, each asserted in `handlers/loader.py` against a module-level tuple of the same name: the envelope (`ENVELOPE_FIELDS`) — `viewer`, `author_username`, `source_project_id`, `target_project_id`, `web_url`, `title`, `source_branch`, `target_branch`; the thread record (`THREAD_RECORD_FIELDS`) — `discussion_id`, `notes`, `resolvable`, `resolved`, `claim`, `file_path`, `line`, `created_at`, `skip`, `skip_reason`; and the note record (`NOTE_RECORD_FIELDS`), one per thread's `notes` list — `id`, `discussion_id`, `author`, `author_username`, `body`, `resolvable`, `resolved`, `file_path`, `line`, `created_at`.
 
 **Search:**
